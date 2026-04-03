@@ -1,0 +1,58 @@
+version: "1.0"
+
+mode: broadcast
+
+health:
+  listen_addr: "127.0.0.1:8092"
+
+broadcast:
+  listen: "127.0.0.1:8093"
+  advertise: "_tuner._tcp"
+  caller_enabled: true
+  audience:
+    enabled: true
+    allow_mdns: "_smoke-alarm._tcp"
+
+receive:
+  mdns_service: "_tuner._tcp"
+  persist_subscriptions: "~/.config/tuner/subscriptions.json"
+
+mdns:
+  service_type: "_tuner._tcp"
+  port: 8093
+  refresh_interval: "30s"
+  domains: ["local"]
+  txt_record:
+    version: "1.0"
+
+channels:
+  preset:
+    - name: ntp
+    - name: dns
+    - name: ping
+  # custom:
+  #   - name: github-actions
+  #     source:
+  #       type: http
+  #       url: "https://api.github.com/repos/{owner}/{repo}/actions/runs"
+  #     auth:
+  #       type: bearer
+  #       token: "${GITHUB_TOKEN}"
+  #     refresh: "30s"
+  #     theme:
+  #       color: "#FF6B6B"
+
+signal:
+  max_age: "30m"
+  decay_linear: true
+  viz_bars: 12
+
+tv:
+  cable_dir: "~/.config/television/cable" # TV's default cable directory (reference only)
+  tuner_dir: "~/.config/tuner/cable" # isolated directory for tuner-managed channels
+  auto_launch: true
+  isolate: true # if true, tuner channels are kept separate from TV defaults
+
+logging:
+  level: info
+  output: console

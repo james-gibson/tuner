@@ -30,3 +30,14 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Compiled binaries (root-level build outputs)
+/tuner
+/main
+/bin/
+
+# macOS
+.DS_Store
+
+# Scratch documents
+working as an expert.md

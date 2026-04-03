@@ -1,0 +1,24 @@
+[package]
+name = "tuner-viz"
+version = "0.1.0"
+edition = "2021"
+description = "Terminal visualization for Tuner - signal strength, alerts, federation topology"
+license = "MIT"
+
+[[bin]]
+name = "tuner-viz"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.29"
+tachyonfx = "0.7"
+crossterm = "0.28"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
