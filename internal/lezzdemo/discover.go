@@ -5,6 +5,7 @@ package lezzdemo
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -23,8 +24,9 @@ type clusterInfo struct {
 }
 
 // SmokeAlarms fetches localhost:19100/cluster and returns mdns.Service entries
-// for every alarm_a and alarm_b endpoint found. Returns nil if the registry is
-// unreachable or empty — callers should treat this as "no demo running".
+// for every alarm_a and alarm_b endpoint that is currently reachable. Stale
+// entries from stopped demo clusters are silently skipped. Returns nil if the
+// registry is unreachable or no live endpoints remain.
 func SmokeAlarms() []mdns.Service {
 	client := &http.Client{Timeout: time.Second}
 	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/cluster", RegistryPort))
@@ -56,6 +58,14 @@ func SmokeAlarms() []mdns.Service {
 			if err != nil {
 				continue
 			}
+			// Skip stale registry entries — verify the port is actually open.
+			addr := net.JoinHostPort(u.Hostname(), u.Port())
+			conn, dialErr := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+			if dialErr != nil {
+				continue
+			}
+			_ = conn.Close()
+
 			services = append(services, mdns.Service{
 				Name:         entry.name,
 				ServiceType:  "_smoke-alarm._tcp",
