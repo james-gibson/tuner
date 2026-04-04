@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/james-gibson/tuner/internal/config"
+	"github.com/james-gibson/tuner/internal/lezzdemo"
 	"github.com/james-gibson/tuner/internal/mdns"
 	"github.com/james-gibson/tuner/internal/server"
 	"github.com/james-gibson/tuner/internal/signal"
@@ -184,8 +185,14 @@ func cmdServe(args []string) {
 			log.Println("no existing peers found — this instance is first on the network")
 		}
 
-		// Check specifically for smoke-alarm services
+		// Check specifically for smoke-alarm services; fall back to lezz demo registry.
 		smokeAlarms := peerBrowser.ServicesByType("_smoke-alarm._tcp")
+		if len(smokeAlarms) == 0 {
+			if injected := lezzdemo.Seed(peerBrowser); len(injected) > 0 {
+				log.Printf("smoke-alarm: mDNS found none; seeded %d from lezz demo registry", len(injected))
+				smokeAlarms = injected
+			}
+		}
 		if len(smokeAlarms) == 0 {
 			log.Println("⚠️  WARNING: no smoke-alarm services discovered")
 			log.Println("   preset channels will show network diagnostics only")
@@ -232,13 +239,17 @@ func cmdServe(args []string) {
 		})
 		go browser.Start(ctx)
 
-		// Wait briefly then check if any smoke-alarm services were found
+		// Wait briefly then check if any smoke-alarm services were found.
 		time.Sleep(6 * time.Second) // Allow initial scan to complete
 		smokeAlarms := browser.ServicesByType("_smoke-alarm._tcp")
 		if len(smokeAlarms) == 0 {
-			log.Println("⚠️  WARNING: no smoke-alarm services discovered on local network")
-			log.Println("   Tuner is running but has no upstream data source")
-			log.Println("   Ensure ocd-smoke-alarm is running with tuner.advertise=true")
+			if injected := lezzdemo.Seed(browser); len(injected) > 0 {
+				log.Printf("smoke-alarm: mDNS found none; seeded %d from lezz demo registry", len(injected))
+			} else {
+				log.Println("⚠️  WARNING: no smoke-alarm services discovered on local network")
+				log.Println("   Tuner is running but has no upstream data source")
+				log.Println("   Ensure ocd-smoke-alarm is running with tuner.advertise=true")
+			}
 		}
 
 		<-ctx.Done()
@@ -387,6 +398,9 @@ func cmdSignals(args []string) {
 		browser.Start(ctx)
 
 		services := browser.ServicesByType("_smoke-alarm._tcp")
+		if len(services) == 0 {
+			services = lezzdemo.SmokeAlarms()
+		}
 		if len(services) == 0 {
 			fatal("no smoke-alarm services found. Use --endpoint=<url> to specify manually.")
 		}

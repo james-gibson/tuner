@@ -190,6 +190,12 @@ func (b *Browser) scan(ctx context.Context) {
 	}
 }
 
+// Add inserts a service discovered via a non-mDNS mechanism (e.g. an HTTP
+// registry). Follows the same deduplication logic as internal mDNS entries.
+func (b *Browser) Add(svc Service) {
+	b.addService(svc)
+}
+
 func (b *Browser) addService(svc Service) {
 	key := fmt.Sprintf("%s:%s:%d", svc.ServiceType, svc.Host, svc.Port)
 
