@@ -10,6 +10,7 @@ import (
 	"os"
 	ossignal "os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -59,7 +60,27 @@ func isAddrInUse(err error) bool {
 		strings.Contains(err.Error(), "bind: can't assign requested address")
 }
 
-var version = "dev"
+var buildVersion string
+
+func version() string {
+	if buildVersion != "" {
+		return buildVersion
+	}
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "dev"
+	}
+	v := bi.Main.Version
+	if v == "" || v == "(devel)" {
+		for _, s := range bi.Settings {
+			if s.Key == "vcs.revision" && len(s.Value) >= 8 {
+				return s.Value[:8]
+			}
+		}
+		return "dev"
+	}
+	return v
+}
 
 func main() {
 	args := os.Args[1:]
@@ -87,7 +108,7 @@ func main() {
 	case "validate":
 		cmdValidate(args[1:])
 	case "version", "--version", "-v":
-		fmt.Printf("tuner %s\n", version)
+		fmt.Printf("tuner %s\n", version())
 	case "--help", "-h", "help":
 		printUsage()
 	default:
@@ -130,14 +151,14 @@ func cmdServe(args []string) {
 		cfg.Mode = modeOverride
 	}
 
-	log.Printf("tuner %s starting in %s mode", version, cfg.Mode)
+	log.Printf("tuner %s starting in %s mode", version(), cfg.Mode)
 
 	ctx, cancel := ossignal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
 	srv := server.New(server.Options{
 		Config:  cfg,
-		Version: version,
+		Version: version(),
 	})
 
 	// Start health server — scan upward if the preferred port is occupied.
