@@ -199,7 +199,7 @@ func cmdServe(args []string) {
 		})
 		scanCtx, scanCancel := context.WithTimeout(ctx, 5*time.Second)
 		peerBrowser.Start(scanCtx)
-		scanCancel()
+		defer scanCancel()
 		if peers := peerBrowser.Services(); len(peers) > 0 {
 			log.Printf("found %d peer(s) already on the network", len(peers))
 		} else {
