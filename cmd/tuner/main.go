@@ -221,7 +221,7 @@ func cmdServe(args []string) {
 
 		// mDNS advertisement uses the confirmed bound port.
 		advertiser := mdns.NewAdvertiser(mdns.AdvertiserOptions{
-			ServiceName: "tuner",
+			ServiceName: fmt.Sprintf("%s:%d", "tuner",len(peerBrowser.Services())),
 			ServiceType: cfg.MDNS.ServiceType,
 			Port:        mdns.ParsePort(broadcastAddr),
 			TXT:         cfg.MDNS.TXTRecord,
@@ -287,7 +287,7 @@ func cmdChannel(args []string) {
 		fatal("usage: tuner channel <name> [--config=...] [--launch]")
 	}
 	name := args[0]
-	configPath := flagValue(args[1:], "config", "configs/default.yaml")
+	configPath := flagValue(args[1:], "config", "tuner.config.yaml")
 	launchFlag := flagPresent(args[1:], "launch")
 
 	cfg, err := config.Load(configPath)
@@ -463,7 +463,7 @@ func cmdSignals(args []string) {
 func cmdMdns(args []string) {
 	// Parse flags
 	duration := flagValue(args, "duration", "8s")
-	serviceTypes := flagValue(args, "services", "_smoke-alarm._tcp,_tuner._tcp,_http._tcp,_https._tcp,_ssh._tcp,_smb._tcp,_afpovertcp._tcp,_airplay._tcp,_raop._tcp,_homekit._tcp,_googlecast._tcp,_spotify-connect._tcp")
+	serviceTypes := serviceTypes(args)
 	format := flagValue(args, "format", "line") // line or json
 
 	scanDuration, err := time.ParseDuration(duration)
@@ -529,6 +529,12 @@ func cmdMdns(args []string) {
 	// Output final summary to stderr so it doesn't interfere with TV parsing
 	services := browser.Services()
 	fmt.Fprintf(os.Stderr, "# discovered %d service(s)\n", len(services))
+}
+
+func serviceTypes(args []string) string {
+	serviceTypes := flagValue(args, "services", "_smoke-alarm._tcp,_tuner._tcp,_http._tcp,_https._tcp,_ssh._tcp,_smb._tcp,_afpovertcp._tcp,_airplay._tcp,_raop._tcp,_homekit._tcp,_googlecast._tcp,_spotify-connect._tcp")
+	fmt.Println(string(serviceTypes))
+	return serviceTypes
 }
 
 func cmdTV(args []string) {
