@@ -52,6 +52,8 @@ func BuiltinPresets() map[string]Preset {
 			Watch:       10.0,
 			Preview:     `ping -c 1 -W 2 8.8.8.8 2>&1 | tail -3`,
 		},
+		"ocd-signal": SignalPreset("http://localhost:17091"),
+		"ocd-topology": SignalPreset("http://localhost:17091"),
 	}
 }
 
