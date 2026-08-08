@@ -24,17 +24,17 @@ const (
 
 // Config is the root configuration.
 type Config struct {
-	Version string         `yaml:"version"`
-	Mode    string         `yaml:"mode"` // broadcast | receive
-	Health  HealthConfig   `yaml:"health"`
+	Version   string          `yaml:"version"`
+	Mode      string          `yaml:"mode"` // broadcast | receive
+	Health    HealthConfig    `yaml:"health"`
 	Broadcast BroadcastConfig `yaml:"broadcast"`
-	Receive ReceiveConfig  `yaml:"receive"`
-	MDNS    MDNSConfig     `yaml:"mdns"`
-	Channels ChannelsConfig `yaml:"channels"`
-	Signal  SignalConfig    `yaml:"signal"`
-	TV      TVConfig       `yaml:"tv"`
-	Logging LoggingConfig  `yaml:"logging"`
-	Extra   map[string]any `yaml:",inline"`
+	Receive   ReceiveConfig   `yaml:"receive"`
+	MDNS      MDNSConfig      `yaml:"mdns"`
+	Channels  ChannelsConfig  `yaml:"channels"`
+	Signal    SignalConfig    `yaml:"signal"`
+	TV        TVConfig        `yaml:"tv"`
+	Logging   LoggingConfig   `yaml:"logging"`
+	Extra     map[string]any  `yaml:",inline"`
 }
 
 type HealthConfig struct {
@@ -42,10 +42,10 @@ type HealthConfig struct {
 }
 
 type BroadcastConfig struct {
-	Listen        string          `yaml:"listen"`
-	Advertise     string          `yaml:"advertise"`
-	CallerEnabled bool            `yaml:"caller_enabled"`
-	Audience      AudienceConfig  `yaml:"audience"`
+	Listen        string         `yaml:"listen"`
+	Advertise     string         `yaml:"advertise"`
+	CallerEnabled bool           `yaml:"caller_enabled"`
+	Audience      AudienceConfig `yaml:"audience"`
 }
 
 type AudienceConfig struct {
@@ -116,10 +116,10 @@ type SignalConfig struct {
 }
 
 type TVConfig struct {
-	CableDir   string `yaml:"cable_dir"`   // default TV cable dir (for reference)
-	TunerDir   string `yaml:"tuner_dir"`   // isolated directory for tuner-managed channels
+	CableDir   string `yaml:"cable_dir"` // default TV cable dir (for reference)
+	TunerDir   string `yaml:"tuner_dir"` // isolated directory for tuner-managed channels
 	AutoLaunch bool   `yaml:"auto_launch"`
-	Isolate    bool   `yaml:"isolate"`     // if true, use tuner_dir exclusively via --cable-dir
+	Isolate    bool   `yaml:"isolate"` // if true, use tuner_dir exclusively via --cable-dir
 }
 
 type LoggingConfig struct {

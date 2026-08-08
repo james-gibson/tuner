@@ -8,10 +8,10 @@ health:
 broadcast:
   listen: "127.0.0.1:8093"
   advertise: "_tuner._tcp"
-  caller_enabled: true
-  audience:
-    enabled: true
-    allow_mdns: "_smoke-alarm._tcp"
+  # caller_enabled: true
+  # audience:
+  #   enabled: true
+  #   allow_mdns: "_smoke-alarm._tcp"
 
 receive:
   mdns_service: "_tuner._tcp"
@@ -21,15 +21,28 @@ mdns:
   service_type: "_tuner._tcp"
   port: 8093
   refresh_interval: "30s"
-  domains: ["local"]
+  domains: ["tuner.local"]
   txt_record:
     version: "1.0"
 
 channels:
   preset:
     - name: ntp
+      type: ntp
+      interval: 5s
     - name: dns
+      type: dns
+      targets:
+        - google.com
+        - cloudflare.com
+      interval: 10s
     - name: ping
+      type: ping
+      targets:
+        - 8.8.8.8
+      interval: 2s
+  custom:
+    - name: ocd-mdns
   # custom:
   #   - name: github-actions
   #     source:
@@ -51,7 +64,7 @@ tv:
   cable_dir: "~/.config/television/cable" # TV's default cable directory (reference only)
   tuner_dir: "~/.config/tuner/cable" # isolated directory for tuner-managed channels
   auto_launch: true
-  isolate: true # if true, tuner channels are kept separate from TV defaults
+  isolate: false # if true, tuner channels are kept separate from TV defaults
 
 logging:
   level: info

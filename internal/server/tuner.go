@@ -25,11 +25,11 @@ type Server struct {
 
 // AudienceMetric holds broadcaster-reported audience data.
 type AudienceMetric struct {
-	Channel  string         `json:"channel"`
-	Count    int            `json:"count"`
-	Signal   float64        `json:"signal"`
-	Metadata map[string]any `json:"metadata,omitempty"`
-	UpdatedAt time.Time     `json:"updated_at"`
+	Channel   string         `json:"channel"`
+	Count     int            `json:"count"`
+	Signal    float64        `json:"signal"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
+	UpdatedAt time.Time      `json:"updated_at"`
 }
 
 // Options configures a new Server.

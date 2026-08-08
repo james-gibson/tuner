@@ -16,13 +16,13 @@ import (
 
 // Service represents a discovered mDNS service.
 type Service struct {
-	Name        string            `json:"name"`
-	ServiceType string            `json:"service_type"`
-	Host        string            `json:"host"`
-	Port        int               `json:"port"`
-	TXT         map[string]string `json:"txt"`
-	DiscoveredAt time.Time        `json:"discovered_at"`
-	LastSeen     time.Time        `json:"last_seen"`
+	Name         string            `json:"name"`
+	ServiceType  string            `json:"service_type"`
+	Host         string            `json:"host"`
+	Port         int               `json:"port"`
+	TXT          map[string]string `json:"txt"`
+	DiscoveredAt time.Time         `json:"discovered_at"`
+	LastSeen     time.Time         `json:"last_seen"`
 }
 
 // Endpoint returns the HTTP address for this service.
