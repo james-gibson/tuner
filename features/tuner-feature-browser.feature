@@ -1,3 +1,9 @@
+# Next-steps record — spec-only, no implementation yet (tuner has no Go code
+# for mDNS/MCP discovery or the feature browser; see internal/lezzdemo).
+# ADHD advertises its MCP endpoint as _adhd-isotope._tcp (adhd/internal/headless/server.go),
+# not _adhd._tcp.
+
+@optional
 Feature: Tuner Feature Browser — Gherkin Coverage from ADHD Cluster
   As a developer or operator using tuner
   I want to browse which Gherkin scenarios are certified by live isotope transits
@@ -24,7 +30,7 @@ Feature: Tuner Feature Browser — Gherkin Coverage from ADHD Cluster
   # ── discovery and connection ────────────────────────────────────────────────
 
   Scenario: tuner discovers an ADHD MCP endpoint via mDNS
-    Given ADHD is advertising its MCP endpoint via _adhd._tcp on the local network
+    Given ADHD is advertising its MCP endpoint via _adhd-isotope._tcp on the local network
     When tuner browses for services
     Then it discovers the ADHD instance
     And extracts the MCP endpoint address from TXT records

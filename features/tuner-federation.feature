@@ -1,3 +1,7 @@
+# Next-steps record — spec-only, no implementation yet (tuner has no federation
+# slot-election code in the repo today).
+
+@optional
 Feature: Tuner Federation Participation
   As a tuner instance
   I want to participate in the smoke-alarm federation as a special-purpose follower
