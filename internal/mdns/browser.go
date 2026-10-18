@@ -69,7 +69,7 @@ func NewBrowser(opts BrowserOptions) *Browser {
 	}
 }
 
-// Start begins periodic browsing until ctx is cancelled.
+// Start begins periodic browsing until ctx is canceled.
 func (b *Browser) Start(ctx context.Context) {
 	if !b.quiet {
 		log.Printf("mdns browser: watching for %v on domains %v (interval: %s)",
@@ -120,7 +120,7 @@ func (b *Browser) ServicesByType(serviceType string) []Service {
 }
 
 // scan performs one round of mDNS browsing for all configured service types.
-// Each browse runs for up to 5 seconds (or until ctx is cancelled).
+// Each browse runs for up to 5 seconds (or until ctx is canceled).
 func (b *Browser) scan(ctx context.Context) {
 	domain := b.domains[0]
 

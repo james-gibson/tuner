@@ -37,10 +37,12 @@ type Config struct {
 	Extra     map[string]any  `yaml:",inline"`
 }
 
+// HealthConfig configures the local health/status HTTP server.
 type HealthConfig struct {
 	ListenAddr string `yaml:"listen_addr"`
 }
 
+// BroadcastConfig configures broadcast mode.
 type BroadcastConfig struct {
 	Listen        string         `yaml:"listen"`
 	Advertise     string         `yaml:"advertise"`
@@ -48,16 +50,19 @@ type BroadcastConfig struct {
 	Audience      AudienceConfig `yaml:"audience"`
 }
 
+// AudienceConfig configures audience metric ingestion.
 type AudienceConfig struct {
 	Enabled   bool   `yaml:"enabled"`
 	AllowMDNS string `yaml:"allow_mdns"`
 }
 
+// ReceiveConfig configures receive mode.
 type ReceiveConfig struct {
 	MDNSService          string `yaml:"mdns_service"`
 	PersistSubscriptions string `yaml:"persist_subscriptions"`
 }
 
+// MDNSConfig configures mDNS advertisement and discovery.
 type MDNSConfig struct {
 	ServiceType     string            `yaml:"service_type"`
 	Port            int               `yaml:"port"`
@@ -74,16 +79,19 @@ func (m MDNSConfig) ServiceTypes() []string {
 	return []string{m.ServiceType}
 }
 
+// ChannelsConfig lists the built-in and custom channels.
 type ChannelsConfig struct {
 	Preset []PresetChannel `yaml:"preset"`
 	Custom []CustomChannel `yaml:"custom"`
 }
 
+// PresetChannel selects a built-in channel by name.
 type PresetChannel struct {
 	Name    string `yaml:"name"`
 	Enabled *bool  `yaml:"enabled,omitempty"`
 }
 
+// CustomChannel defines a user-supplied channel and its data source.
 type CustomChannel struct {
 	Name    string       `yaml:"name"`
 	Source  SourceConfig `yaml:"source"`
@@ -92,6 +100,7 @@ type CustomChannel struct {
 	Theme   *ThemeConfig `yaml:"theme,omitempty"`
 }
 
+// SourceConfig describes where a custom channel reads its data from.
 type SourceConfig struct {
 	Type     string `yaml:"type"` // command | http | sse | webhook
 	Command  string `yaml:"command,omitempty"`
@@ -99,22 +108,26 @@ type SourceConfig struct {
 	Endpoint string `yaml:"endpoint,omitempty"`
 }
 
+// AuthConfig holds credentials for a custom channel source.
 type AuthConfig struct {
 	Type  string `yaml:"type"`
 	Token string `yaml:"token,omitempty"`
 }
 
+// ThemeConfig customizes a channel's appearance.
 type ThemeConfig struct {
 	Color string `yaml:"color"`
 	Icon  string `yaml:"icon,omitempty"`
 }
 
+// SignalConfig configures alert signal strength and decay.
 type SignalConfig struct {
 	MaxAge      string `yaml:"max_age"`
 	DecayLinear bool   `yaml:"decay_linear"`
 	VizBars     int    `yaml:"viz_bars"`
 }
 
+// TVConfig configures integration with Television.
 type TVConfig struct {
 	CableDir   string `yaml:"cable_dir"` // default TV cable dir (for reference)
 	TunerDir   string `yaml:"tuner_dir"` // isolated directory for tuner-managed channels
@@ -122,6 +135,7 @@ type TVConfig struct {
 	Isolate    bool   `yaml:"isolate"` // if true, use tuner_dir exclusively via --cable-dir
 }
 
+// LoggingConfig configures log level and output.
 type LoggingConfig struct {
 	Level  string `yaml:"level"`
 	Output string `yaml:"output"`
@@ -133,7 +147,9 @@ func Load(path string) (*Config, error) {
 	if path == "" {
 		return cfg, nil
 	}
-	data, err := os.ReadFile(path)
+	// The config path is supplied by the operator on the command line; reading it
+	// from an arbitrary location is the documented behavior of Load.
+	data, err := os.ReadFile(path) //nolint:gosec // G304: operator-supplied config path by design
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}

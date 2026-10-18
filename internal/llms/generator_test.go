@@ -27,7 +27,7 @@ func TestParseFeatures(t *testing.T) {
     When viewing <channel>
     Then data appears
 `
-	if err := os.WriteFile(filepath.Join(dir, "test.feature"), []byte(feature), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "test.feature"), []byte(feature), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
