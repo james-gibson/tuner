@@ -68,7 +68,7 @@ func SmokeAlarms() []mdns.Service {
 
 			services = append(services, mdns.Service{
 				Name:         entry.name,
-				ServiceType:  "_smoke-alarm._tcp",
+				ServiceType:  mdns.SmokeAlarmServiceType,
 				Host:         u.Hostname(),
 				Port:         port,
 				TXT:          map[string]string{"source": "lezz-demo"},

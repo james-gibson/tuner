@@ -13,7 +13,6 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -59,6 +58,11 @@ func isAddrInUse(err error) bool {
 	return strings.Contains(err.Error(), "address already in use") ||
 		strings.Contains(err.Error(), "bind: can't assign requested address")
 }
+
+// peerScanTimeout bounds the pre-advertising peer scan in broadcast mode. It
+// is a whole-scan budget: the browser browses every configured service type
+// concurrently within it, so the array length does not divide it (tuner#3).
+const peerScanTimeout = 5 * time.Second
 
 var buildVersion string
 
@@ -187,9 +191,11 @@ func cmdServe(args []string) {
 
 		// Before advertising, scan for any peers that are already running.
 		// This gives the new instance immediate awareness of the existing network.
+		// The timeout is a whole-scan budget: every configured type is browsed
+		// concurrently within it (tuner#3).
 		log.Println("scanning for existing peers before advertising...")
 		peerBrowser := mdns.NewBrowser(mdns.BrowserOptions{
-			ServiceTypes: append(cfg.MDNS.ServiceTypes(), "_smoke-alarm._tcp"),
+			ServiceTypes: cfg.MDNS.BrowseTypes(),
 			Domains:      cfg.MDNS.Domains,
 			Interval:     cfg.RefreshDuration(),
 			OnChange: func(svc mdns.Service) {
@@ -197,24 +203,24 @@ func cmdServe(args []string) {
 					svc.ServiceType, svc.Name, svc.Endpoint(), svc.TXT)
 			},
 		})
-		scanCtx, scanCancel := context.WithTimeout(ctx, 5*time.Second)
+		scanCtx, scanCancel := context.WithTimeout(ctx, peerScanTimeout)
 		peerBrowser.Start(scanCtx)
 		defer scanCancel()
-		if peers := peerBrowser.Services(); len(peers) > 0 {
-			log.Printf("found %d peer(s) already on the network", len(peers))
+		if peers := peerBrowser.Endpoints(); len(peers) > 0 {
+			log.Printf("found %d peer endpoint(s) already on the network", len(peers))
 		} else {
 			log.Println("no existing peers found — this instance is first on the network")
 		}
 
-		// Check specifically for smoke-alarm services; fall back to lezz demo registry.
-		smokeAlarms := peerBrowser.ServicesByType("_smoke-alarm._tcp")
-		if len(smokeAlarms) == 0 {
+		// Check specifically for smoke-alarm endpoints; fall back to lezz demo registry.
+		smokeAlarmEndpoints := peerBrowser.EndpointsByType(mdns.SmokeAlarmServiceType)
+		if len(smokeAlarmEndpoints) == 0 {
 			if injected := lezzdemo.Seed(peerBrowser); len(injected) > 0 {
 				log.Printf("smoke-alarm: mDNS found none; seeded %d from lezz demo registry", len(injected))
-				smokeAlarms = injected
+				smokeAlarmEndpoints = peerBrowser.EndpointsByType(mdns.SmokeAlarmServiceType)
 			}
 		}
-		if len(smokeAlarms) == 0 {
+		if len(smokeAlarmEndpoints) == 0 {
 			log.Println("⚠️  WARNING: no smoke-alarm services discovered")
 			log.Println("   preset channels will show network diagnostics only")
 		}
@@ -253,7 +259,7 @@ func cmdServe(args []string) {
 	} else {
 		// Receive mode: start mDNS browser.
 		browser := mdns.NewBrowser(mdns.BrowserOptions{
-			ServiceTypes: append(cfg.MDNS.ServiceTypes(), "_smoke-alarm._tcp"),
+			ServiceTypes: cfg.MDNS.BrowseTypes(),
 			Domains:      cfg.MDNS.Domains,
 			Interval:     cfg.RefreshDuration(),
 			OnChange: func(svc mdns.Service) {
@@ -262,10 +268,10 @@ func cmdServe(args []string) {
 		})
 		go browser.Start(ctx)
 
-		// Wait briefly then check if any smoke-alarm services were found.
+		// Wait briefly then check if any smoke-alarm endpoints were found.
 		time.Sleep(6 * time.Second) // Allow initial scan to complete
-		smokeAlarms := browser.ServicesByType("_smoke-alarm._tcp")
-		if len(smokeAlarms) == 0 {
+		smokeAlarmEndpoints := browser.EndpointsByType(mdns.SmokeAlarmServiceType)
+		if len(smokeAlarmEndpoints) == 0 {
 			if injected := lezzdemo.Seed(browser); len(injected) > 0 {
 				log.Printf("smoke-alarm: mDNS found none; seeded %d from lezz demo registry", len(injected))
 			} else {
@@ -365,7 +371,7 @@ func cmdDiscover(args []string) {
 	defer cancel()
 
 	browser := mdns.NewBrowser(mdns.BrowserOptions{
-		ServiceTypes: append(cfg.MDNS.ServiceTypes(), "_smoke-alarm._tcp"),
+		ServiceTypes: cfg.MDNS.BrowseTypes(),
 		Domains:      cfg.MDNS.Domains,
 		Interval:     5 * time.Second,
 		OnChange: func(svc mdns.Service) {
@@ -416,13 +422,15 @@ func cmdSignals(args []string) {
 		defer cancel()
 
 		browser := mdns.NewBrowser(mdns.BrowserOptions{
-			ServiceTypes: []string{"_smoke-alarm._tcp"},
+			// Only the alarm data source here — this command wants an
+			// endpoint to fetch from, not the peer/isotope array.
+			ServiceTypes: []string{mdns.SmokeAlarmServiceType},
 			Domains:      []string{"local"},
 			Interval:     5 * time.Second,
 		})
 		browser.Start(ctx)
 
-		services := browser.ServicesByType("_smoke-alarm._tcp")
+		services := browser.ServicesByType(mdns.SmokeAlarmServiceType)
 		if len(services) == 0 {
 			services = lezzdemo.SmokeAlarms()
 		}
@@ -485,25 +493,15 @@ func cmdMdns(args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), scanDuration)
 	defer cancel()
 
-	// Track services as they're discovered for real-time output
-	seen := make(map[string]bool)
-	var mu sync.Mutex
-
+	// The browser dedupes records itself and calls OnChange once per new
+	// record, so no local "seen" bookkeeping is needed here: two instances at
+	// one host:port are two records (tuner#3).
 	browser := mdns.NewBrowser(mdns.BrowserOptions{
 		ServiceTypes: types,
 		Domains:      []string{"local"},
 		Interval:     1 * time.Second, // Scan frequently to catch new services
 		Quiet:        true,            // Suppress logs for clean TV output
 		OnChange: func(svc mdns.Service) {
-			mu.Lock()
-			key := fmt.Sprintf("%s:%s:%d", svc.ServiceType, svc.Host, svc.Port)
-			if seen[key] {
-				mu.Unlock()
-				return
-			}
-			seen[key] = true
-			mu.Unlock()
-
 			if format == "json" {
 				data, _ := json.Marshal(svc)
 				fmt.Println(string(data))
@@ -533,7 +531,8 @@ func cmdMdns(args []string) {
 
 	// Output final summary to stderr so it doesn't interfere with TV parsing
 	services := browser.Services()
-	fmt.Fprintf(os.Stderr, "# discovered %d service(s)\n", len(services))
+	fmt.Fprintf(os.Stderr, "# discovered %d service record(s) across %d endpoint(s)\n",
+		len(services), len(browser.Endpoints()))
 }
 
 func serviceTypes(args []string) string {

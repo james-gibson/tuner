@@ -19,6 +19,8 @@ receive:
 
 mdns:
   service_type: "_tuner._tcp"
+  # Registered isotope types to browse — these carry role/trust_rung in TXT.
+  isotope_types: ["_adhd-isotope._tcp"]
   port: 8093
   refresh_interval: "30s"
   domains: ["tuner.local"]
