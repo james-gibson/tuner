@@ -6,9 +6,10 @@ import (
 )
 
 func TestBuiltinPresetsCount(t *testing.T) {
+	// mdns, ntp, dns, ping, signal, federation
 	presets := BuiltinPresets()
-	if len(presets) != 4 {
-		t.Fatalf("expected 4 presets, got %d", len(presets))
+	if len(presets) != 6 {
+		t.Fatalf("expected 6 presets, got %d", len(presets))
 	}
 }
 

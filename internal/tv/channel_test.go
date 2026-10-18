@@ -72,11 +72,11 @@ func TestWriteAllPresets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("write all: %v", err)
 	}
-	if len(paths) != 4 {
-		t.Fatalf("expected 4 preset files, got %d", len(paths))
+	if len(paths) != 6 {
+		t.Fatalf("expected 6 preset files, got %d", len(paths))
 	}
-	if written != 4 {
-		t.Fatalf("expected 4 files written, got %d", written)
+	if written != 6 {
+		t.Fatalf("expected 6 files written, got %d", written)
 	}
 	for _, p := range paths {
 		if _, err := os.Stat(p); err != nil {
