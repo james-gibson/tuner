@@ -33,7 +33,7 @@ func NewAdvertiser(opts AdvertiserOptions) *Advertiser {
 		opts.Domain = "local."
 	} else if !strings.HasSuffix(opts.Domain, ".") {
 		// Ensure domain is fully qualified with trailing dot
-		opts.Domain = opts.Domain + "."
+		opts.Domain += "."
 	}
 	return &Advertiser{opts: opts}
 }
@@ -98,7 +98,7 @@ func (a *Advertiser) ServiceID() string {
 func formatTXT(m map[string]string) []string {
 	out := make([]string, 0, len(m))
 	for k, v := range m {
-		out = append(out, strings.Join([]string{k, v}, "="))
+		out = append(out, k+"="+v)
 	}
 	return out
 }

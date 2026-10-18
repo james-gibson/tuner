@@ -42,19 +42,19 @@ func GenerateLLMSTxt(scenarios []GherkinScenario, info RuntimeInfo) string {
 
 	b.WriteString("## Capabilities\n")
 	for _, cap := range info.Capabilities {
-		b.WriteString(fmt.Sprintf("- %s\n", cap))
+		fmt.Fprintf(&b, "- %s\n", cap)
 	}
 	b.WriteString("\n")
 
 	b.WriteString("## Connection\n")
-	b.WriteString(fmt.Sprintf("- Mode: %s\n", info.Mode))
-	b.WriteString(fmt.Sprintf("- Health: http://%s/healthz\n", info.HealthAddr))
-	b.WriteString(fmt.Sprintf("- Broadcast: http://%s/channels\n", info.BroadcastAddr))
+	fmt.Fprintf(&b, "- Mode: %s\n", info.Mode)
+	fmt.Fprintf(&b, "- Health: http://%s/healthz\n", info.HealthAddr)
+	fmt.Fprintf(&b, "- Broadcast: http://%s/channels\n", info.BroadcastAddr)
 	b.WriteString("\n")
 
 	b.WriteString("## Channels\n")
 	for _, ch := range info.Channels {
-		b.WriteString(fmt.Sprintf("- **%s**: %s\n", ch.Name, ch.Description))
+		fmt.Fprintf(&b, "- **%s**: %s\n", ch.Name, ch.Description)
 	}
 	b.WriteString("\n")
 
@@ -63,10 +63,10 @@ func GenerateLLMSTxt(scenarios []GherkinScenario, info RuntimeInfo) string {
 		currentFeature := ""
 		for _, s := range scenarios {
 			if s.Feature != currentFeature {
-				b.WriteString(fmt.Sprintf("\n### %s\n", s.Feature))
+				fmt.Fprintf(&b, "\n### %s\n", s.Feature)
 				currentFeature = s.Feature
 			}
-			b.WriteString(fmt.Sprintf("- %s\n", s.Name))
+			fmt.Fprintf(&b, "- %s\n", s.Name)
 		}
 		b.WriteString("\n")
 	}
@@ -94,11 +94,12 @@ type ChannelInfo struct {
 }
 
 func parseFeatureFile(path string) ([]GherkinScenario, error) {
-	f, err := os.Open(path)
+	// path comes from filepath.Walk over the caller-supplied features directory.
+	f, err := os.Open(path) //nolint:gosec // G304: path originates from the walked directory
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var (
 		scenarios []GherkinScenario

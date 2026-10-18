@@ -18,7 +18,7 @@ func newTestServer() *Server {
 
 func TestHandleHealthz(t *testing.T) {
 	srv := newTestServer()
-	req := httptest.NewRequest("GET", "/healthz", nil)
+	req := httptest.NewRequest("GET", "/healthz", http.NoBody)
 	w := httptest.NewRecorder()
 	srv.HandleHealthz(w, req)
 
@@ -36,7 +36,7 @@ func TestHandleHealthz(t *testing.T) {
 
 func TestHandleReadyz(t *testing.T) {
 	srv := newTestServer()
-	req := httptest.NewRequest("GET", "/readyz", nil)
+	req := httptest.NewRequest("GET", "/readyz", http.NoBody)
 	w := httptest.NewRecorder()
 	srv.HandleReadyz(w, req)
 
@@ -52,7 +52,7 @@ func TestHandleReadyz(t *testing.T) {
 
 func TestHandleStatus(t *testing.T) {
 	srv := newTestServer()
-	req := httptest.NewRequest("GET", "/status", nil)
+	req := httptest.NewRequest("GET", "/status", http.NoBody)
 	w := httptest.NewRecorder()
 	srv.HandleStatus(w, req)
 
@@ -75,7 +75,7 @@ func TestHandleStatus(t *testing.T) {
 
 func TestHandleListChannels(t *testing.T) {
 	srv := newTestServer()
-	req := httptest.NewRequest("GET", "/channels", nil)
+	req := httptest.NewRequest("GET", "/channels", http.NoBody)
 	w := httptest.NewRecorder()
 	srv.HandleListChannels(w, req)
 
@@ -95,7 +95,7 @@ func TestHandleListChannels(t *testing.T) {
 
 func TestHandleChannelInfo(t *testing.T) {
 	srv := newTestServer()
-	req := httptest.NewRequest("GET", "/channels/ntp", nil)
+	req := httptest.NewRequest("GET", "/channels/ntp", http.NoBody)
 	w := httptest.NewRecorder()
 	srv.HandleChannel(w, req)
 
@@ -134,7 +134,7 @@ func TestHandleAudiencePost(t *testing.T) {
 
 func TestHandleAudienceMethodNotAllowed(t *testing.T) {
 	srv := newTestServer()
-	req := httptest.NewRequest("GET", "/channels/ntp/audience", nil)
+	req := httptest.NewRequest("GET", "/channels/ntp/audience", http.NoBody)
 	w := httptest.NewRecorder()
 	srv.HandleChannel(w, req)
 
@@ -164,7 +164,7 @@ func TestHandleCallerPost(t *testing.T) {
 
 func TestHandleCallerMethodNotAllowed(t *testing.T) {
 	srv := newTestServer()
-	req := httptest.NewRequest("GET", "/channels/ntp/caller", nil)
+	req := httptest.NewRequest("GET", "/channels/ntp/caller", http.NoBody)
 	w := httptest.NewRecorder()
 	srv.HandleChannel(w, req)
 
@@ -175,7 +175,7 @@ func TestHandleCallerMethodNotAllowed(t *testing.T) {
 
 func TestHandleLLMSTxt(t *testing.T) {
 	srv := newTestServer()
-	req := httptest.NewRequest("GET", "/llms.txt", nil)
+	req := httptest.NewRequest("GET", "/llms.txt", http.NoBody)
 	w := httptest.NewRecorder()
 	srv.HandleLLMSTxt(w, req)
 

@@ -49,7 +49,7 @@ func GenerateTOML(p Preset) (string, error) {
 // If the file exists and content is identical, it skips writing.
 func WriteChannel(cableDir string, p Preset) (string, bool, error) {
 	expanded := expandHome(cableDir)
-	if err := os.MkdirAll(expanded, 0755); err != nil {
+	if err := os.MkdirAll(expanded, 0o750); err != nil {
 		return "", false, fmt.Errorf("create cable dir: %w", err)
 	}
 
@@ -60,14 +60,15 @@ func WriteChannel(cableDir string, p Preset) (string, bool, error) {
 
 	path := filepath.Join(expanded, fmt.Sprintf("ocd-%s.toml", p.Name))
 
-	// Check if file exists with same content
-	existing, err := os.ReadFile(path)
+	// Check if file exists with same content. path is rooted at the operator's
+	// configured cable directory and joined with a generated filename.
+	existing, err := os.ReadFile(path) //nolint:gosec // G304: path is confined to the configured cable dir
 	if err == nil && string(existing) == content {
 		// File exists and content is identical - skip write
 		return path, false, nil
 	}
 
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		return "", false, fmt.Errorf("write channel: %w", err)
 	}
 	return path, true, nil
@@ -134,7 +135,9 @@ func LaunchTelevision(channelName, cableDir string) error {
 		args = append(args, "--no-remote", channelName)
 	}
 
-	cmd := exec.Command(tvPath, args...)
+	// tvPath comes from exec.LookPath; args are assembled from the operator's
+	// config, not from untrusted input.
+	cmd := exec.Command(tvPath, args...) //nolint:gosec // G204: binary resolved via LookPath, args from config
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin

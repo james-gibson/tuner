@@ -41,7 +41,7 @@ func bindWithRetry(addr string, maxRetries int) (net.Listener, string, error) {
 		ln, err := net.Listen("tcp", candidate)
 		if err == nil {
 			if i > 0 {
-				log.Printf("port %s in use, using %s instead", addr, candidate)
+				log.Printf("port %s in use, using %s instead", addr, candidate) //nolint:gosec // G706: addresses are computed locally, not attacker-controlled
 			}
 			return ln, candidate, nil
 		}
@@ -151,7 +151,7 @@ func cmdServe(args []string) {
 		cfg.Mode = modeOverride
 	}
 
-	log.Printf("tuner %s starting in %s mode", version(), cfg.Mode)
+	log.Printf("tuner %s starting in %s mode", version(), cfg.Mode) //nolint:gosec // G706: mode is validated against a closed set of constants
 
 	ctx, cancel := ossignal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -170,8 +170,8 @@ func cmdServe(args []string) {
 	healthMux.HandleFunc("/healthz", srv.HandleHealthz)
 	healthMux.HandleFunc("/readyz", srv.HandleReadyz)
 	healthMux.HandleFunc("/status", srv.HandleStatus)
-	healthSrv := &http.Server{Handler: healthMux}
-	log.Printf("health server listening on %s", healthAddr)
+	healthSrv := &http.Server{Handler: healthMux, ReadHeaderTimeout: 10 * time.Second}
+	log.Printf("health server listening on %s", healthAddr) //nolint:gosec // G706: address derives from local config, not untrusted input
 	go func() {
 		if err := healthSrv.Serve(healthLn); err != nil && err != http.ErrServerClosed {
 			log.Printf("health server error: %v", err)
@@ -221,7 +221,7 @@ func cmdServe(args []string) {
 
 		// mDNS advertisement uses the confirmed bound port.
 		advertiser := mdns.NewAdvertiser(mdns.AdvertiserOptions{
-			ServiceName: fmt.Sprintf("%s:%d", "tuner",len(peerBrowser.Services())),
+			ServiceName: fmt.Sprintf("%s:%d", "tuner", len(peerBrowser.Services())),
 			ServiceType: cfg.MDNS.ServiceType,
 			Port:        mdns.ParsePort(broadcastAddr),
 			TXT:         cfg.MDNS.TXTRecord,
@@ -235,8 +235,8 @@ func cmdServe(args []string) {
 		broadcastMux.HandleFunc("/channels", srv.HandleListChannels)
 		broadcastMux.HandleFunc("/channels/", srv.HandleChannel)
 		broadcastMux.HandleFunc("/llms.txt", srv.HandleLLMSTxt)
-		broadcastSrv := &http.Server{Handler: broadcastMux}
-		log.Printf("broadcast server listening on %s", broadcastAddr)
+		broadcastSrv := &http.Server{Handler: broadcastMux, ReadHeaderTimeout: 10 * time.Second}
+		log.Printf("broadcast server listening on %s", broadcastAddr) //nolint:gosec // G706: address derives from local config, not untrusted input
 		go func() {
 			if err := broadcastSrv.Serve(broadcastLn); err != nil && err != http.ErrServerClosed {
 				log.Printf("broadcast server error: %v", err)
@@ -247,7 +247,9 @@ func cmdServe(args []string) {
 		log.Println("shutting down...")
 		shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutCancel()
-		broadcastSrv.Shutdown(shutCtx)
+		if err := broadcastSrv.Shutdown(shutCtx); err != nil {
+			log.Printf("broadcast server shutdown: %v", err)
+		}
 	} else {
 		// Receive mode: start mDNS browser.
 		browser := mdns.NewBrowser(mdns.BrowserOptions{
@@ -279,7 +281,9 @@ func cmdServe(args []string) {
 
 	shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutCancel()
-	healthSrv.Shutdown(shutCtx)
+	if err := healthSrv.Shutdown(shutCtx); err != nil {
+		log.Printf("health server shutdown: %v", err)
+	}
 }
 
 func cmdChannel(args []string) {
@@ -429,12 +433,13 @@ func cmdSignals(args []string) {
 		fmt.Printf("using: %s\n", endpoint)
 	}
 
-	// Fetch status
-	resp, err := http.Get(endpoint + "/status")
+	// Fetch status. endpoint is either operator-supplied via --endpoint or
+	// discovered on the local network by design.
+	resp, err := http.Get(endpoint + "/status") //nolint:gosec // G704: intentional request to a discovered/operator-supplied endpoint
 	if err != nil {
 		fatal("fetch status: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var status struct {
 		Alerts []signal.Alert `json:"alerts"`
@@ -533,7 +538,7 @@ func cmdMdns(args []string) {
 
 func serviceTypes(args []string) string {
 	serviceTypes := flagValue(args, "services", "_smoke-alarm._tcp,_tuner._tcp,_http._tcp,_https._tcp,_ssh._tcp,_smb._tcp,_afpovertcp._tcp,_airplay._tcp,_raop._tcp,_homekit._tcp,_googlecast._tcp,_spotify-connect._tcp")
-	fmt.Println(string(serviceTypes))
+	fmt.Println(serviceTypes)
 	return serviceTypes
 }
 
@@ -622,7 +627,7 @@ func cmdTV(args []string) {
 			fmt.Print("Select channel (number or name): ")
 
 			var input string
-			fmt.Scanln(&input)
+			_, _ = fmt.Scanln(&input)
 			input = strings.TrimSpace(input)
 
 			// Check if numeric

@@ -50,7 +50,7 @@ func New(opts Options) *Server {
 
 // HandleHealthz returns 200 if alive.
 func (s *Server) HandleHealthz(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
+	writeJSON(w, map[string]any{
 		"status": "ok",
 		"time":   time.Now().UTC().Format(time.RFC3339Nano),
 	})
@@ -58,7 +58,7 @@ func (s *Server) HandleHealthz(w http.ResponseWriter, _ *http.Request) {
 
 // HandleReadyz returns 200 if ready to serve.
 func (s *Server) HandleReadyz(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
+	writeJSON(w, map[string]any{
 		"status": "ready",
 		"mode":   s.cfg.Mode,
 	})
@@ -73,7 +73,7 @@ func (s *Server) HandleStatus(w http.ResponseWriter, _ *http.Request) {
 	presetCount := len(s.cfg.Channels.Preset)
 	customCount := len(s.cfg.Channels.Custom)
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	writeJSON(w, map[string]any{
 		"service":  "tuner",
 		"version":  s.version,
 		"mode":     s.cfg.Mode,
@@ -99,7 +99,7 @@ func (s *Server) HandleListChannels(w http.ResponseWriter, _ *http.Request) {
 			"source": c.Source.Type,
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"channels": channels})
+	writeJSON(w, map[string]any{"channels": channels})
 }
 
 // HandleChannel routes channel-specific requests.
@@ -124,7 +124,7 @@ func (s *Server) HandleChannel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Default: return channel info.
-	writeJSON(w, http.StatusOK, map[string]any{
+	writeJSON(w, map[string]any{
 		"channel": name,
 		"status":  "available",
 	})
@@ -168,7 +168,7 @@ func (s *Server) HandleLLMSTxt(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	body := llms.GenerateLLMSTxt(scenarios, info)
-	w.Write([]byte(body))
+	_, _ = w.Write([]byte(body))
 }
 
 func (s *Server) handleChannelSSE(w http.ResponseWriter, _ *http.Request, channel string) {
@@ -181,8 +181,9 @@ func (s *Server) handleChannelSSE(w http.ResponseWriter, _ *http.Request, channe
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	// Send initial event.
-	fmt.Fprintf(w, "event: connected\ndata: {\"channel\":%q}\n\n", channel)
+	// Send initial event. %q Go-quotes the channel name, escaping quotes,
+	// backslashes and control characters, so it is safe inside the JSON string.
+	_, _ = fmt.Fprintf(w, "event: connected\ndata: {\"channel\":%q}\n\n", channel) //nolint:gosec // G705: %q escapes the value before it reaches the body
 	flusher.Flush()
 
 	// TODO: stream real channel data from presets/sources.
@@ -190,12 +191,9 @@ func (s *Server) handleChannelSSE(w http.ResponseWriter, _ *http.Request, channe
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
-	for {
-		select {
-		case t := <-ticker.C:
-			fmt.Fprintf(w, "event: heartbeat\ndata: {\"time\":%q}\n\n", t.UTC().Format(time.RFC3339Nano))
-			flusher.Flush()
-		}
+	for t := range ticker.C {
+		_, _ = fmt.Fprintf(w, "event: heartbeat\ndata: {\"time\":%q}\n\n", t.UTC().Format(time.RFC3339Nano))
+		flusher.Flush()
 	}
 }
 
@@ -214,7 +212,7 @@ func (s *Server) handleCaller(w http.ResponseWriter, r *http.Request, channel st
 		return
 	}
 	// TODO: fan out to SSE subscribers.
-	writeJSON(w, http.StatusOK, map[string]any{
+	writeJSON(w, map[string]any{
 		"status":  "received",
 		"channel": channel,
 	})
@@ -237,11 +235,11 @@ func (s *Server) handleAudience(w http.ResponseWriter, r *http.Request, channel 
 	s.audience[channel] = metric
 	s.mu.Unlock()
 
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(w, map[string]string{"status": "ok"})
 }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
+func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(v)
 }
