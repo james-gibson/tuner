@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
@@ -127,6 +128,36 @@ func TestServiceTypes(t *testing.T) {
 	m2 := MDNSConfig{}
 	if types := m2.ServiceTypes(); types != nil {
 		t.Fatalf("expected nil for empty service type, got %v", types)
+	}
+}
+
+// tuner#3: the browse array has one source — own type, smoke-alarm, isotopes —
+// instead of being appended together at each call site.
+func TestBrowseTypes(t *testing.T) {
+	m := MDNSConfig{ServiceType: "_tuner._tcp", IsotopeTypes: []string{"_adhd-isotope._tcp"}}
+	want := []string{"_tuner._tcp", "_smoke-alarm._tcp", "_adhd-isotope._tcp"}
+	if got := m.BrowseTypes(); !slices.Equal(got, want) {
+		t.Fatalf("expected %v, got %v", want, got)
+	}
+
+	// No own service type: still the data source plus the isotopes.
+	m2 := MDNSConfig{IsotopeTypes: []string{"_adhd-isotope._tcp"}}
+	want2 := []string{"_smoke-alarm._tcp", "_adhd-isotope._tcp"}
+	if got := m2.BrowseTypes(); !slices.Equal(got, want2) {
+		t.Fatalf("expected %v, got %v", want2, got)
+	}
+
+	// Declaring a type twice must not browse it twice.
+	m3 := MDNSConfig{ServiceType: "_tuner._tcp", IsotopeTypes: []string{"_smoke-alarm._tcp", "_adhd-isotope._tcp"}}
+	want3 := []string{"_tuner._tcp", "_smoke-alarm._tcp", "_adhd-isotope._tcp"}
+	if got := m3.BrowseTypes(); !slices.Equal(got, want3) {
+		t.Fatalf("expected deduped %v, got %v", want3, got)
+	}
+
+	// The defaults carry the registered isotope type so an unconfigured
+	// tuner still subscribes to the trust-bearing array.
+	if got := Defaults().MDNS.BrowseTypes(); !slices.Equal(got, want) {
+		t.Fatalf("expected default browse types %v, got %v", want, got)
 	}
 }
 

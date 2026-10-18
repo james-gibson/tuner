@@ -3,8 +3,10 @@ package config
 import (
 	"fmt"
 	"os"
+	"slices"
 	"time"
 
+	"github.com/james-gibson/tuner/internal/mdns"
 	"gopkg.in/yaml.v3"
 )
 
@@ -65,6 +67,7 @@ type ReceiveConfig struct {
 // MDNSConfig configures mDNS advertisement and discovery.
 type MDNSConfig struct {
 	ServiceType     string            `yaml:"service_type"`
+	IsotopeTypes    []string          `yaml:"isotope_types"`
 	Port            int               `yaml:"port"`
 	TXTRecord       map[string]string `yaml:"txt_record"`
 	RefreshInterval string            `yaml:"refresh_interval"`
@@ -77,6 +80,31 @@ func (m MDNSConfig) ServiceTypes() []string {
 		return nil
 	}
 	return []string{m.ServiceType}
+}
+
+// BrowseTypes returns every service type the browser subscribes to: tuner's
+// own type (peers), smoke-alarm (the data source), and the registered isotope
+// types whose TXT records carry role and trust_rung.
+//
+// This is the single source for the browse array. Assembling that array ad hoc
+// at each call site is what let one type silently consume another's scan
+// budget (tuner#3), and it left "what tuner trusts" unrepresentable: the
+// trust-bearing set is the registered isotope types, not the bare tool names.
+func (m MDNSConfig) BrowseTypes() []string {
+	var out []string
+	for _, candidates := range [][]string{
+		m.ServiceTypes(),
+		{mdns.SmokeAlarmServiceType},
+		m.IsotopeTypes,
+	} {
+		for _, svcType := range candidates {
+			if svcType == "" || slices.Contains(out, svcType) {
+				continue
+			}
+			out = append(out, svcType)
+		}
+	}
+	return out
 }
 
 // ChannelsConfig lists the built-in and custom channels.
@@ -173,7 +201,7 @@ func Defaults() *Config {
 			CallerEnabled: true,
 			Audience: AudienceConfig{
 				Enabled:   true,
-				AllowMDNS: "_smoke-alarm._tcp",
+				AllowMDNS: mdns.SmokeAlarmServiceType,
 			},
 		},
 		Receive: ReceiveConfig{
@@ -181,7 +209,12 @@ func Defaults() *Config {
 			PersistSubscriptions: "~/.config/tuner/subscriptions.json",
 		},
 		MDNS: MDNSConfig{
-			ServiceType:     "_tuner._tcp",
+			ServiceType: "_tuner._tcp",
+			// Registered isotope types to browse. Each carries role and
+			// trust_rung in its TXT record (isotope.Advertise); today only
+			// adhd registers one. A config file overrides this list; an
+			// explicit "isotope_types: []" opts out, an absent key keeps it.
+			IsotopeTypes:    []string{"_adhd-isotope._tcp"},
 			Port:            58093,
 			RefreshInterval: "30s",
 			Domains:         []string{"local"},
