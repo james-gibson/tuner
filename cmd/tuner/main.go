@@ -338,7 +338,7 @@ func cmdChannel(args []string) {
 				if cfg.TV.Isolate {
 					launchDir = cableDir
 				}
-				if err := tv.LaunchTelevision(name, launchDir); err != nil {
+				if err := tv.LaunchTelevision(p.Name, launchDir); err != nil {
 					fatal("launch television: %v", err)
 				}
 			}

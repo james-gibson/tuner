@@ -35,9 +35,27 @@ func TestBuiltinPresetsHaveRequiredFields(t *testing.T) {
 
 func TestBuiltinPresetsContainExpected(t *testing.T) {
 	presets := BuiltinPresets()
-	for _, expected := range []string{"ntp", "dns", "ping"} {
+	for _, expected := range []string{"ntp", "dns", "ping", "signal", "federation"} {
 		if _, ok := presets[expected]; !ok {
 			t.Fatalf("missing expected preset %q", expected)
+		}
+	}
+}
+
+// TestBuiltinPresetsKeyMatchesName pins the invariant james-gibson/tuner#12
+// restored: the CLI lookup key and the preset name are the same thing.
+//
+// `tuner channel <key>` resolves presets[key], `tuner launch <key>` hands the
+// key to Television as the channel name, and WriteChannel names the file from
+// Preset.Name. When the two disagree, `tuner channel ocd-topology --launch`
+// writes ocd-federation.toml and then launches a channel that does not exist.
+func TestBuiltinPresetsKeyMatchesName(t *testing.T) {
+	for key, p := range BuiltinPresets() {
+		if key != p.Name {
+			t.Fatalf("preset key %q does not match Preset.Name %q", key, p.Name)
+		}
+		if strings.HasPrefix(key, "ocd-") {
+			t.Fatalf("preset key %q carries the ocd- prefix; WriteChannel adds it to the filename", key)
 		}
 	}
 }
