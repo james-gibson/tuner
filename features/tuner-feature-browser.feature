@@ -152,6 +152,10 @@ Feature: Tuner Feature Browser — Gherkin Coverage from ADHD Cluster
   # Skills and features use the same certification model (existence → equality →
   # isotope). Tuner browses both surfaces from ADHD and presents them together,
   # since a certified skill may also produce the isotope that certifies a feature.
+  #
+  # The skills rendered here are created by tuner itself: creation, nesting and
+  # hop distance are specified in tuner-nested-dynamic-skills.feature. ADHD only
+  # exposes the certified rungs; it does not produce the skills.
 
   Scenario: tuner calls adhd.skills.certified and renders the skill list alongside features
     Given ADHD reports 5 skills at various rungs
