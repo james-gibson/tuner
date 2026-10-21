@@ -22,6 +22,11 @@ func HasTunerViz() bool {
 // BuiltinPresets returns the default filler channels.
 // These provide live network data until real smoke-alarm channels come online.
 // If tuner-viz is available, signal-based presets use it for rich rendering.
+//
+// Invariant: the map key is the preset's CLI name and must equal Preset.Name.
+// The key is what `tuner channel`/`tuner launch` resolve, while WriteChannel
+// derives the on-disk filename from Preset.Name — a mismatch writes one file and
+// launches for a channel name that does not exist (james-gibson/tuner#12).
 func BuiltinPresets() map[string]Preset {
 	return map[string]Preset{
 		"mdns": {
@@ -52,8 +57,8 @@ func BuiltinPresets() map[string]Preset {
 			Watch:       10.0,
 			Preview:     `ping -c 1 -W 2 8.8.8.8 2>&1 | tail -3`,
 		},
-		"ocd-signal":   SignalPreset("http://localhost:17091"),
-		"ocd-topology": TopologyPreset("http://localhost:17091"),
+		"signal":     SignalPreset("http://localhost:17091"),
+		"federation": TopologyPreset("http://localhost:17091"),
 	}
 }
 
