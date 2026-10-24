@@ -80,6 +80,23 @@ dns-sd -B _tuner._tcp local.
 
 Other lab tools can browse for `_tuner._tcp` and auto-subscribe to channels they care about.
 
+**Discovery is continuous.** tuner opens one browse per service type for the
+lifetime of the process and serves before it looks at the network, so a
+`_smoke-alarm._tcp` instance that starts ten minutes after tuner is discovered
+as it announces — not at the next scan window. A bounded refresh re-resolves
+live records so they are not mistaken for departed ones; a record that stops
+being refreshed is dropped and reported through `OnRemove`. There is no
+pre-advertising scan holding up the broadcast listener.
+
+The expiry is a **view lease, not a trust change**. Nothing derives a 42i rung
+from tuner's discovery, and losing a record here must not demote or evict
+anything; the window is wide enough (60s floor) that a tuner can roll its
+advertisement — withdraw, restart, re-announce, possibly on a new port — without
+the view flapping. Trust stays with the cluster that granted it, not with the
+continuity of an advertisement.
+
+See `features/tuner-mdns-continuous.feature`.
+
 ---
 
 ## Configuration

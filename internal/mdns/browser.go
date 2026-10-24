@@ -1,6 +1,10 @@
 // Package mdns provides mDNS discovery for Tuner.
 // In receive mode, Tuner browses for _smoke-alarm._tcp and _tuner._tcp services.
-// Tuner never registers itself -- it is a passive observer.
+// The browse loop stays open for the lifetime of the process: an instance that
+// announces after startup is discovered as it announces, not at the next scan
+// window (features/tuner-mdns-continuous.feature). The resolver reports
+// arrivals only, so departure is inferred from a periodic liveness refresh and
+// reported through Browser.OnRemove.
 package mdns
 
 import (
@@ -21,13 +25,31 @@ import (
 // isotope types, whose TXT records hold role and trust_rung (tuner#3).
 const SmokeAlarmServiceType = "_smoke-alarm._tcp"
 
-// defaultBrowseWindow is how long one service type's browse runs. Every type
-// in the array is browsed concurrently, so the window is the budget for the
-// whole scan, not a serial slice of it per type. Browsing the types one after
+// defaultBrowseWindow is how long one bounded browse runs. Every type in the
+// array is browsed concurrently, so the window is the budget for the whole
+// scan, not a serial slice of it per type. Browsing the types one after
 // another is what hid _smoke-alarm._tcp: the pre-advertising peer scan in
 // broadcast mode allows one 5s deadline, the first type consumed it all, and
 // the remaining types were never queried (tuner#3).
+//
+// Start does not use this window. A bounded browse cannot see an instance that
+// announces ten seconds after the window closed, which is exactly what
+// features/tuner-mdns-continuous.feature forbids: the browse loop stays open
+// for the lifetime of the process, and this window only bounds the periodic
+// liveness refresh.
 const defaultBrowseWindow = 5 * time.Second
+
+// livenessWindow bounds one refresh browse. A refresh re-resolves every type so
+// records that are still alive get their LastSeen updated; it is short because
+// the continuous browse is what receives new announcements.
+const livenessWindow = 3 * time.Second
+
+// minExpiry is the shortest time a record may go unseen before it is treated as
+// departed. zeroconf never reports a removal (a goodbye packet deletes the
+// entry from its own sent-map without emitting it), so departure has to be
+// inferred from the liveness refresh; the floor keeps a 1s refresh interval from
+// expiring a record between two refreshes.
+const minExpiry = 60 * time.Second
 
 // Service represents a discovered mDNS service record: one instance of one
 // service type at one address. Several records may share an address -- see
@@ -133,6 +155,8 @@ type Browser struct {
 	mu       sync.RWMutex
 	services map[string]Service // records, keyed by type|instance|host:port
 	onChange func(Service)      // optional callback, once per new record
+	onRemove func(Service)      // optional callback, once per departed record
+	expiry   time.Duration      // unseen for this long means departed
 }
 
 // BrowserOptions configures the mDNS browser.
@@ -141,6 +165,7 @@ type BrowserOptions struct {
 	Domains      []string      // e.g. ["local"]
 	Interval     time.Duration // refresh interval
 	OnChange     func(Service) // called when a new record is found
+	OnRemove     func(Service) // called when a record is no longer refreshed
 	Quiet        bool          // suppress log output (for TV channel use)
 }
 
@@ -160,35 +185,78 @@ func NewBrowser(opts BrowserOptions) *Browser {
 		quiet:        opts.Quiet,
 		services:     make(map[string]Service),
 		onChange:     opts.OnChange,
+		onRemove:     opts.OnRemove,
 	}
+	b.expiry = b.defaultExpiry()
 	b.browse = b.zeroconfBrowse
 	return b
 }
 
-// Start begins periodic browsing until ctx is canceled.
+// defaultExpiry is how long a record may go unseen before it is dropped. Two
+// refresh intervals gives one missed refresh of slack.
+func (b *Browser) defaultExpiry() time.Duration {
+	expiry := 2 * b.interval
+	if expiry < minExpiry {
+		expiry = minExpiry
+	}
+	return expiry
+}
+
+// Start browses continuously until ctx is canceled.
+//
+// One browse per service type stays open for the lifetime of ctx. A bounded
+// scan cannot see an instance that announces after the window closes, so the
+// browse loop must not close after the first batch
+// (features/tuner-mdns-continuous.feature). Announcements arrive from the
+// responder as they happen; a periodic liveness refresh updates LastSeen for
+// records that are still there, and records that stop being refreshed are
+// dropped and reported through OnRemove.
 func (b *Browser) Start(ctx context.Context) {
 	if !b.quiet {
-		log.Printf("mdns browser: watching for %v on domains %v (interval: %s, window: %s, types browsed concurrently)",
-			b.serviceTypes, b.domains, b.interval, b.browseWindow)
+		log.Printf("mdns browser: continuous browse for %v on domains %v (refresh: %s, expiry: %s, types concurrently)",
+			b.serviceTypes, b.domains, b.interval, b.expiry)
 	}
 
-	// Do an initial scan.
-	b.scan(ctx)
+	var wg sync.WaitGroup
+	domain := b.domains[0]
+	for _, svcType := range b.serviceTypes {
+		wg.Add(1)
+		go func(st string) {
+			defer wg.Done()
+			// No per-type deadline: the browse lives as long as the process.
+			b.browse(ctx, domain, st)
+		}(svcType)
+	}
 
-	ticker := time.NewTicker(b.interval)
-	defer ticker.Stop()
+	refresh := time.NewTicker(b.interval)
+	defer refresh.Stop()
+	expiry := time.NewTicker(b.expiryAgeCheck())
+	defer expiry.Stop()
 
 	for {
 		select {
-		case <-ticker.C:
-			b.scan(ctx)
+		case <-refresh.C:
+			b.refresh(ctx)
+		case now := <-expiry.C:
+			b.expire(now)
 		case <-ctx.Done():
+			wg.Wait()
 			if !b.quiet {
 				log.Println("mdns browser: stopped")
 			}
 			return
 		}
 	}
+}
+
+// expiryAgeCheck decides how often to look for departed records. Checking more
+// often than the expiry is pointless; half of it bounds the detection delay.
+func (b *Browser) expiryAgeCheck() time.Duration {
+	check := b.expiry / 2
+	if check < time.Second {
+		check = time.Second
+	}
+	return check
 }
 
 // Services returns a snapshot of every discovered record.
@@ -359,9 +427,76 @@ func (b *Browser) browseType(ctx context.Context, domain, svcType string) {
 	if window <= 0 {
 		window = defaultBrowseWindow
 	}
+	b.browseWithWindow(ctx, domain, svcType, window)
+}
+
+func (b *Browser) browseWithWindow(ctx context.Context, domain, svcType string, window time.Duration) {
 	browseCtx, cancel := context.WithTimeout(ctx, window)
 	defer cancel()
 	b.browse(browseCtx, domain, svcType)
+}
+
+// refresh re-resolves every type once, so records that are still on the
+// network get their LastSeen updated. It is bounded and separate from the
+// continuous browse: zeroconf does not re-deliver a record it has already sent,
+// so without a fresh browse a live record would look as stale as a departed
+// one. It is also the only way to notice a departure, because the resolver has
+// no removal callback.
+func (b *Browser) refresh(ctx context.Context) {
+	if ctx.Err() != nil {
+		return
+	}
+	domain := b.domains[0]
+	window := livenessWindow
+	if b.browseWindow > 0 && b.browseWindow < window {
+		window = b.browseWindow
+	}
+
+	var wg sync.WaitGroup
+	for _, svcType := range b.serviceTypes {
+		wg.Add(1)
+		go func(st string) {
+			defer wg.Done()
+			b.browseWithWindow(ctx, domain, st, window)
+		}(svcType)
+	}
+	wg.Wait()
+}
+
+// expire drops records that have not been refreshed within the expiry window
+// and reports each one through OnRemove. A record is one advertised instance;
+// several records may share an endpoint, so expiry is per record, not per
+// address.
+func (b *Browser) expire(now time.Time) {
+	expiry := b.expiry
+	if expiry <= 0 {
+		expiry = minExpiry
+	}
+
+	var departed []Service
+	b.mu.Lock()
+	for key, svc := range b.services {
+		if now.Sub(svc.LastSeen) >= expiry {
+			delete(b.services, key)
+			departed = append(departed, svc)
+		}
+	}
+	b.mu.Unlock()
+
+	if len(departed) == 0 {
+		return
+	}
+	sort.Slice(departed, func(i, j int) bool {
+		return recordKey(departed[i]) < recordKey(departed[j])
+	})
+	for _, svc := range departed {
+		if !b.quiet {
+			log.Printf("mdns browser: departed %s %q at %s", svc.ServiceType, svc.Name, svc.Endpoint())
+		}
+		if b.onRemove != nil {
+			b.onRemove(svc)
+		}
+	}
 }
 
 // zeroconfBrowse is the real browse: it resolves one service type on the LAN
