@@ -62,6 +62,28 @@ Feature: Tuner Broadcasting
     Then the message is acknowledged
     And the message is available to SSE subscribers
 
+  @caller
+  Scenario: Caller acknowledgement names the observed address
+    Given caller is enabled in config
+    When a viewer posts a message to /channels/ntp/caller
+    Then the acknowledgement names the address the broadcaster observed for the viewer
+    And that address comes from the connection, not from a forwarding header
+    And subscribers of the channel receive the same observed address
+
+  @caller
+  Scenario: A subscriber that connects after the message still receives it
+    Given caller is enabled in config
+    When a viewer posts a message to /channels/ntp/caller
+    And a client then subscribes to GET /channels/ntp/sse
+    Then the client receives the caller message from the channel history
+    And a message posted on one channel does not reach another channel's subscribers
+
+  @caller
+  Scenario: Caller line can be switched off
+    Given caller is disabled in config
+    When a viewer posts a message to /channels/ntp/caller
+    Then the request is refused with 403
+
   @llmstxt
   Scenario: Dynamic llms.txt generation
     When a client requests GET /llms.txt
