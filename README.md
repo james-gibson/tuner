@@ -95,6 +95,16 @@ advertisement — withdraw, restart, re-announce, possibly on a new port — wit
 the view flapping. Trust stays with the cluster that granted it, not with the
 continuity of an advertisement.
 
+**A discovered instance is a channel.** Every `_smoke-alarm._tcp` record becomes
+a live channel source: `GET /channels` lists it beside the configured presets,
+`GET /channels/<instance>` reports its endpoint, and `GET
+/channels/<instance>/status` polls that instance's own `/status`. Sources are
+keyed by the instance's DNS-SD label, not `host:port`, so a member that rebinds
+its health port is updated in place instead of duplicated, and the source is
+retired when its record expires. While serving, each discovered instance also
+gets its own TOML in the tuner cable directory: a new instance adds one file and
+never rewrites the others; a departing one takes its file with it.
+
 See `features/tuner-mdns-continuous.feature`.
 
 ---
@@ -130,6 +140,7 @@ tuner/
 ├── cmd/tuner/             — CLI entry point
 ├── internal/
 │   ├── server/            — HTTP + SSE server
+│   ├── channelsource/     — live channel-source registry (discovered instances)
 │   ├── signal/            — Signal source implementations
 │   ├── mdns/              — mDNS advertisement
 │   ├── config/            — Config loading
