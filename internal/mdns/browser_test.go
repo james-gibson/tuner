@@ -110,6 +110,17 @@ func TestServiceEndpoint(t *testing.T) {
 	if svc.Endpoint() != "http://192.168.1.50:18088" {
 		t.Fatalf("expected http://192.168.1.50:18088, got %q", svc.Endpoint())
 	}
+
+	// An IPv6 literal has to be bracketed or the endpoint is not a URL, and a
+	// discovered source is fetched from this address.
+	v6 := Service{Host: "fe80::1", Port: 18088}
+	if v6.Endpoint() != "http://[fe80::1]:18088" {
+		t.Fatalf("expected a bracketed IPv6 endpoint, got %q", v6.Endpoint())
+	}
+	ep := Endpoint{Host: "2001:db8::2", Port: 9090}
+	if ep.URL() != "http://[2001:db8::2]:9090" {
+		t.Fatalf("expected a bracketed IPv6 endpoint URL, got %q", ep.URL())
+	}
 }
 
 func TestParsePort(t *testing.T) {

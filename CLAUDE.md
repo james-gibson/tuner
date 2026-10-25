@@ -40,6 +40,7 @@ cmd/tuner/        CLI entrypoint, flag parsing, subcommand dispatch
 internal/
   config/         YAML config loading, Defaults(), schema structs
   server/         HTTP handlers: /channels, /channels/<name>, /llms.txt, /healthz
+  channelsource/  live channel-source registry written by the mDNS browser
   mdns/           mDNS advertiser and browser (grandcat/zeroconf)
   tv/             Television TOML channel generation, preset library
   signal/         Alert signal strength calculation and bar visualization

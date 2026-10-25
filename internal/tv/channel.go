@@ -1,7 +1,9 @@
 package tv
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -58,7 +60,7 @@ func WriteChannel(cableDir string, p Preset) (string, bool, error) {
 		return "", false, err
 	}
 
-	path := filepath.Join(expanded, fmt.Sprintf("ocd-%s.toml", p.Name))
+	path := filepath.Join(expanded, ChannelFile(p.Name))
 
 	// Check if file exists with same content. path is rooted at the operator's
 	// configured cable directory and joined with a generated filename.
@@ -72,6 +74,48 @@ func WriteChannel(cableDir string, p Preset) (string, bool, error) {
 		return "", false, fmt.Errorf("write channel: %w", err)
 	}
 	return path, true, nil
+}
+
+// RemoveChannel deletes a channel's TOML file from the cable directory.
+// It reports whether a file was actually removed.
+func RemoveChannel(cableDir, name string) (string, bool, error) {
+	path := filepath.Join(expandHome(cableDir), ChannelFile(name))
+	// path is confined to the configured cable directory by ChannelFile.
+	if err := os.Remove(path); err != nil { //nolint:gosec // G304: path is confined to the configured cable dir
+		if errors.Is(err, fs.ErrNotExist) {
+			return path, false, nil
+		}
+		return "", false, fmt.Errorf("remove channel: %w", err)
+	}
+	return path, true, nil
+}
+
+// ChannelFile is the TOML file name for a channel.
+//
+// Channel names come from two places: built-in presets, and DNS-SD instance
+// labels discovered on the network. A label is not a file name -- a lezz demo
+// seed is called "cluster/alarm-a", which filepath.Join would turn into a
+// subdirectory, and a label containing ".." would escape the cable directory
+// entirely -- so every byte outside [A-Za-z0-9_-] is folded to '-'.
+func ChannelFile(name string) string {
+	safe := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			return r
+		case r == '_', r == '-':
+			return r
+		default:
+			return '-'
+		}
+	}, name)
+
+	// Leading dots would create a hidden file, and a name made only of dots or
+	// dashes would reduce to "" or "-".
+	safe = strings.Trim(safe, ".-")
+	if safe == "" {
+		safe = "channel"
+	}
+	return fmt.Sprintf("ocd-%s.toml", safe)
 }
 
 // WriteAllPresets writes all built-in presets to the cable directory.

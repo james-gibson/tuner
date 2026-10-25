@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/james-gibson/tuner/internal/channelsource"
 	"github.com/james-gibson/tuner/internal/config"
 	"github.com/james-gibson/tuner/internal/lezzdemo"
 	"github.com/james-gibson/tuner/internal/mdns"
@@ -155,10 +156,31 @@ func cmdServe(args []string) {
 	ctx, cancel := ossignal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	// Every discovered _smoke-alarm._tcp instance becomes a live channel
+	// source here. The browser writes into the registry, the server reads it,
+	// and the TV writer subscribes to it; before that shared registry a
+	// post-startup instance only produced a log line (tuner#20).
+	sources := channelsource.NewRegistry()
+
 	srv := server.New(server.Options{
-		Config:  cfg,
-		Version: version(),
+		Config:   cfg,
+		Version:  version(),
+		Channels: sources,
 	})
+
+	// Report every source transition once. The subscriber is attached before
+	// the TV writer so the log line for an arrival precedes the file it wrote.
+	unsubscribeLog := sources.Subscribe(func(event channelsource.Event) {
+		log.Printf("channel source %s: %s at %s",
+			event.Kind, event.Source.Instance, event.Source.Endpoint)
+	})
+	defer unsubscribeLog()
+
+	// Discovered instances get a TV channel as they arrive and lose it when
+	// they depart. Existing preset files are not regenerated: each discovery
+	// only writes its own file, and an unchanged file is left alone.
+	stopTVSync := tv.WatchDiscovered(sources, cableDir(cfg))
+	defer stopTVSync()
 
 	// Start health server — scan upward if the preferred port is occupied.
 	healthLn, healthAddr, err := bindWithRetry(cfg.Health.ListenAddr, 10)
@@ -222,10 +244,22 @@ func cmdServe(args []string) {
 			Domains:      cfg.MDNS.Domains,
 			Interval:     cfg.RefreshDuration(),
 			OnChange: func(svc mdns.Service) {
+				if _, ok := sources.Observe(svc); ok {
+					return // reported by the registry subscriber
+				}
 				log.Printf("peer discovered: %s %q at %s (txt: %v)",
 					svc.ServiceType, svc.Name, svc.Endpoint(), svc.TXT)
 			},
 			OnRemove: func(svc mdns.Service) {
+				if _, ok := sources.Retire(svc); ok {
+					return // reported by the registry subscriber
+				}
+				// A smoke-alarm retirement that did not remove a source is the
+				// stale record of an instance that rebound its health port.
+				// The live source stays; there is nothing to report.
+				if svc.ServiceType == mdns.SmokeAlarmServiceType {
+					return
+				}
 				log.Printf("peer departed: %s %q at %s", svc.ServiceType, svc.Name, svc.Endpoint())
 			},
 		})
@@ -250,7 +284,19 @@ func cmdServe(args []string) {
 			Domains:      cfg.MDNS.Domains,
 			Interval:     cfg.RefreshDuration(),
 			OnChange: func(svc mdns.Service) {
+				if _, ok := sources.Observe(svc); ok {
+					return // reported by the registry subscriber
+				}
 				log.Printf("discovered: %s at %s", svc.ServiceType, svc.Endpoint())
+			},
+			OnRemove: func(svc mdns.Service) {
+				if _, ok := sources.Retire(svc); ok {
+					return // reported by the registry subscriber
+				}
+				if svc.ServiceType == mdns.SmokeAlarmServiceType {
+					return
+				}
+				log.Printf("discovered peer departed: %s at %s", svc.ServiceType, svc.Endpoint())
 			},
 		})
 		go browser.Start(ctx)
@@ -677,6 +723,15 @@ func cmdTV(args []string) {
 		fmt.Fprintln(os.Stderr, "  sync    Write all preset channels to cable directory")
 		os.Exit(1)
 	}
+}
+
+// cableDir is the directory tuner manages channels in: the isolated tuner
+// directory when configured, otherwise the shared cable directory.
+func cableDir(cfg *config.Config) string {
+	if cfg.TV.TunerDir != "" {
+		return cfg.TV.TunerDir
+	}
+	return cfg.TV.CableDir
 }
 
 func expandHome(path string) string {

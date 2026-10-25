@@ -11,6 +11,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"sort"
 	"strconv"
 	"strings"
@@ -66,7 +67,10 @@ type Service struct {
 
 // Endpoint returns the HTTP address for this service.
 func (s Service) Endpoint() string {
-	return fmt.Sprintf("http://%s:%d", s.Host, s.Port)
+	// JoinHostPort brackets IPv6 literals; a bare fmt.Sprintf("%s:%d") turns a
+	// link-local address into an unusable URL, which a discovered channel
+	// source now depends on.
+	return "http://" + net.JoinHostPort(s.Host, strconv.Itoa(s.Port))
 }
 
 // Instance returns the DNS-SD instance label ("adhd" from
@@ -135,7 +139,7 @@ type Endpoint struct {
 
 // URL returns the HTTP address for this endpoint.
 func (e Endpoint) URL() string {
-	return fmt.Sprintf("http://%s:%d", e.Host, e.Port)
+	return "http://" + net.JoinHostPort(e.Host, strconv.Itoa(e.Port))
 }
 
 // browseFunc performs one browse for serviceType under ctx, handing every
