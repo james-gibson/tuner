@@ -535,10 +535,11 @@ func cmdMdns(args []string) {
 		len(services), len(browser.Endpoints()))
 }
 
+// serviceTypes resolves the browse-type list from the --services flag. It must
+// not write to stdout: `tuner mdns` output is consumed as records (or as JSON),
+// so a stray line corrupts the stream (tuner#22).
 func serviceTypes(args []string) string {
-	serviceTypes := flagValue(args, "services", "_smoke-alarm._tcp,_tuner._tcp,_http._tcp,_https._tcp,_ssh._tcp,_smb._tcp,_afpovertcp._tcp,_airplay._tcp,_raop._tcp,_homekit._tcp,_googlecast._tcp,_spotify-connect._tcp")
-	fmt.Println(serviceTypes)
-	return serviceTypes
+	return flagValue(args, "services", "_smoke-alarm._tcp,_tuner._tcp,_http._tcp,_https._tcp,_ssh._tcp,_smb._tcp,_afpovertcp._tcp,_airplay._tcp,_raop._tcp,_homekit._tcp,_googlecast._tcp,_spotify-connect._tcp")
 }
 
 func cmdTV(args []string) {
