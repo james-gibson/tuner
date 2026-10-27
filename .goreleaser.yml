@@ -22,7 +22,7 @@ builds:
 
 archives:
   - id: tuner
-    builds: [tuner]
+    ids: [tuner]
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
     format_overrides:
       - goos: windows
