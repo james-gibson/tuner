@@ -44,3 +44,13 @@ jobs:
 
       - name: Build binary
         run: go build ./cmd/tuner
+
+      # `goreleaser check` is the only cheap validation of the release config
+      # before a tag exists, and a deprecated key fails it on a clean tree
+      # (issue #17). The version range matches release.yml, so CI validates
+      # exactly the goreleaser a tag release will run.
+      - name: Validate GoReleaser config
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          version: "~> v2"
+          args: check
