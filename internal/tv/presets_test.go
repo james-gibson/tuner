@@ -82,6 +82,18 @@ func TestSignalPresetFallback(t *testing.T) {
 	if !HasTunerViz() && strings.Contains(p.Command, "tuner-viz") {
 		t.Fatal("fallback command should not reference tuner-viz")
 	}
+	// Both paths read the endpoint through `tuner signals`, because the endpoint
+	// serves a smoke-alarm /status document rather than an alert array
+	// (tuner#23).
+	if !strings.Contains(p.Command, "tuner signals") {
+		t.Fatalf("signal preset should read through `tuner signals`, got %q", p.Command)
+	}
+	if !strings.Contains(p.Command, "--endpoint=") {
+		t.Fatalf("signal preset should pass the endpoint to `tuner signals`, got %q", p.Command)
+	}
+	if strings.Contains(p.Command, "curl") {
+		t.Fatalf("signal preset should not pipe the raw /status document, got %q", p.Command)
+	}
 }
 
 func TestTopologyPresetFallback(t *testing.T) {

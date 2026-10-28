@@ -409,15 +409,26 @@ func cmdList(_ []string) {
 func cmdSignals(args []string) {
 	configPath := flagValue(args, "config", "")
 	endpoint := flagValue(args, "endpoint", "")
+	jsonOut := flagPresent(args, "json")
 
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		fatal("load config: %v", err)
 	}
 
+	// Progress goes to stderr when stdout is a document another program reads:
+	// `tuner signals --json | tuner-viz signal --stdin` must stay parseable.
+	note := func(msg string) {
+		if jsonOut {
+			fmt.Fprintln(os.Stderr, msg)
+			return
+		}
+		fmt.Println(msg)
+	}
+
 	// If no endpoint specified, try to discover one via mDNS
 	if endpoint == "" {
-		fmt.Println("discovering smoke-alarm services...")
+		note("discovering smoke-alarm services...")
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
@@ -438,22 +449,36 @@ func cmdSignals(args []string) {
 			fatal("no smoke-alarm services found. Use --endpoint=<url> to specify manually.")
 		}
 		endpoint = services[0].Endpoint()
-		fmt.Printf("using: %s\n", endpoint)
+		note(fmt.Sprintf("using: %s", endpoint))
 	}
 
 	// Fetch status. endpoint is either operator-supplied via --endpoint or
 	// discovered on the local network by design.
-	resp, err := http.Get(endpoint + "/status") //nolint:gosec // G704: intentional request to a discovered/operator-supplied endpoint
+	statusURL := endpoint + "/status"
+	resp, err := http.Get(statusURL) //nolint:gosec // G704: intentional request to a discovered/operator-supplied endpoint
 	if err != nil {
 		fatal("fetch status: %v", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	var status struct {
-		Alerts []signal.Alert `json:"alerts"`
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		fatal("fetch status: %s returned %s", statusURL, resp.Status)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
-		fatal("decode status: %v", err)
+
+	// The endpoint reports its monitored targets, not an alerts array
+	// (tuner#23); DecodeStatus maps both, and a bare alert array too.
+	alerts, err := signal.DecodeStatus(resp.Body)
+	if err != nil {
+		fatal("%v", err)
+	}
+
+	if jsonOut {
+		// The normalised alert array, for tuner-viz and anything else reading
+		// a status document that is not shaped like one.
+		if err := json.NewEncoder(os.Stdout).Encode(alerts); err != nil {
+			fatal("encode alerts: %v", err)
+		}
+		return
 	}
 
 	// Display signal bars
@@ -461,14 +486,14 @@ func cmdSignals(args []string) {
 	fmt.Printf("\nSignal Strength (max age: %s)\n", maxAge)
 	fmt.Println(strings.Repeat("─", 50))
 
-	for _, alert := range status.Alerts {
+	for _, alert := range alerts {
 		str := signal.Strength(alert, maxAge)
 		bar := signal.VizBar(str, cfg.Signal.VizBars)
 		fmt.Printf("  %-20s [%s] %.0f%% %s\n",
 			alert.Source, bar, str*100, alert.Severity)
 	}
 
-	if len(status.Alerts) == 0 {
+	if len(alerts) == 0 {
 		fmt.Println("  No active alerts")
 	}
 }

@@ -58,7 +58,7 @@ Feature: Tuner Receiving
   @signal
   Scenario: Display signal strength from multiple sources
     Given three discovered smoke-alarm services
-    And each has alerts with varying severity and age
+    And each reports monitored targets with varying severity and age
     When signal strength is rendered
     Then each service shows a signal bar
     And critical recent alerts show strongest signal

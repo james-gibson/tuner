@@ -65,23 +65,29 @@ func BuiltinPresets() map[string]Preset {
 // SignalPreset returns a TV channel preset for alert signal visualization.
 // Uses tuner-viz if available, falls back to Go ASCII rendering via the
 // tuner binary's built-in signal command.
+//
+// Both paths go through `tuner signals`, because the endpoint serves a
+// smoke-alarm /status document (targets), not the alert array tuner-viz reads
+// from stdin. Piping the document straight into tuner-viz rendered nothing
+// (tuner#23).
 func SignalPreset(endpoint string) Preset {
+	source := `tuner signals --endpoint=` + endpoint
 	if HasTunerViz() {
 		return Preset{
 			Name:        "signal",
 			Description: "Alert Signal Strength (tuner-viz)",
-			Command:     `curl -s ` + endpoint + `/status | tuner-viz signal --stdin --preview`,
+			Command:     source + ` --json | tuner-viz signal --stdin --preview`,
 			Watch:       5.0,
-			Preview:     `curl -s ` + endpoint + `/status | tuner-viz signal --stdin --width 24 --preview`,
+			Preview:     source + ` --json | tuner-viz signal --stdin --width 24 --preview`,
 		}
 	}
 	// ASCII fallback via Go.
 	return Preset{
 		Name:        "signal",
 		Description: "Alert Signal Strength",
-		Command:     `curl -s ` + endpoint + `/status`,
+		Command:     source,
 		Watch:       5.0,
-		Preview:     `curl -s ` + endpoint + `/status`,
+		Preview:     source,
 	}
 }
 
