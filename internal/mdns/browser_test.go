@@ -3,6 +3,7 @@ package mdns
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -108,6 +109,17 @@ func TestServiceEndpoint(t *testing.T) {
 	svc := Service{Host: "192.168.1.50", Port: 18088}
 	if svc.Endpoint() != "http://192.168.1.50:18088" {
 		t.Fatalf("expected http://192.168.1.50:18088, got %q", svc.Endpoint())
+	}
+
+	// An IPv6 literal has to be bracketed or the endpoint is not a URL, and a
+	// discovered source is fetched from this address.
+	v6 := Service{Host: "fe80::1", Port: 18088}
+	if v6.Endpoint() != "http://[fe80::1]:18088" {
+		t.Fatalf("expected a bracketed IPv6 endpoint, got %q", v6.Endpoint())
+	}
+	ep := Endpoint{Host: "2001:db8::2", Port: 9090}
+	if ep.URL() != "http://[2001:db8::2]:9090" {
+		t.Fatalf("expected a bracketed IPv6 endpoint URL, got %q", ep.URL())
 	}
 }
 
@@ -311,5 +323,160 @@ func TestInstanceForNonDNSSDNames(t *testing.T) {
 	seed := Service{Name: "demo/alarm-a", ServiceType: SmokeAlarmServiceType}
 	if got := seed.Instance(); got != "demo/alarm-a" {
 		t.Fatalf("expected the name verbatim, got %q", got)
+	}
+}
+
+// The browse loop is not a scan: it stays open for the lifetime of the process,
+// so an instance that announces after startup is still seen
+// (features/tuner-mdns-continuous.feature).
+func TestStartKeepsOneBrowseOpenPerType(t *testing.T) {
+	b := NewBrowser(BrowserOptions{
+		ServiceTypes: []string{"_smoke-alarm._tcp", "_adhd-isotope._tcp"},
+		Quiet:        true,
+	})
+
+	var mu sync.Mutex
+	starts := make(map[string]int)
+	var active atomic.Int32
+
+	b.browse = func(ctx context.Context, domain, svcType string) {
+		mu.Lock()
+		starts[svcType]++
+		mu.Unlock()
+		active.Add(1)
+		defer active.Add(-1)
+		<-ctx.Done()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		b.Start(ctx)
+		close(done)
+	}()
+
+	// Well past the old 5s window's proportional delay: nothing closes it.
+	deadline := time.Now().Add(2 * time.Second)
+	for active.Load() != int32(len(b.serviceTypes)) && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// An announcement that arrives after startup is tracked like any other.
+	b.addService(Service{
+		Name:        "smoke-alarm-late",
+		ServiceType: "_smoke-alarm._tcp",
+		Host:        "192.168.1.77",
+		Port:        18090,
+	})
+	if got := len(b.ServicesByType("_smoke-alarm._tcp")); got != 1 {
+		t.Fatalf("late announcement tracked as %d service(s), want 1", got)
+	}
+
+	// Still browsing: the loop did not close after the first batch.
+	if got := active.Load(); got != int32(len(b.serviceTypes)) {
+		t.Fatalf("%d browse(s) open, want %d", got, len(b.serviceTypes))
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start did not return after cancellation")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, svcType := range b.serviceTypes {
+		if starts[svcType] != 1 {
+			t.Errorf("%s browsed %d time(s), want exactly one long-lived browse", svcType, starts[svcType])
+		}
+	}
+}
+
+func TestExpireRemovesDepartedRecords(t *testing.T) {
+	var removed []Service
+	b := NewBrowser(BrowserOptions{
+		ServiceTypes: []string{"_smoke-alarm._tcp"},
+		Quiet:        true,
+		OnRemove: func(svc Service) {
+			removed = append(removed, svc)
+		},
+	})
+	b.expiry = 10 * time.Second
+
+	b.addService(Service{Name: "alive", ServiceType: "_smoke-alarm._tcp", Host: "192.0.2.1", Port: 18088})
+	b.addService(Service{Name: "gone", ServiceType: "_smoke-alarm._tcp", Host: "192.0.2.2", Port: 18088})
+
+	now := time.Now()
+	b.mu.Lock()
+	gone := b.services[recordKey(Service{Name: "gone", ServiceType: "_smoke-alarm._tcp", Host: "192.0.2.2", Port: 18088})]
+	gone.LastSeen = now.Add(-time.Minute)
+	b.services[recordKey(gone)] = gone
+	b.mu.Unlock()
+
+	b.expire(now)
+
+	if len(removed) != 1 || removed[0].Name != "gone" {
+		t.Fatalf("removed = %v, want only the departed record", removed)
+	}
+	if names := len(b.Services()); names != 1 {
+		t.Fatalf("tracked %d service(s) after expiry, want 1", names)
+	}
+}
+
+func TestRefreshKeepsLiveRecordsFromExpiring(t *testing.T) {
+	b := NewBrowser(BrowserOptions{
+		ServiceTypes: []string{"_smoke-alarm._tcp"},
+		Quiet:        true,
+	})
+	b.expiry = 10 * time.Second
+
+	live := Service{Name: "live", ServiceType: "_smoke-alarm._tcp", Host: "192.0.2.9", Port: 18088}
+	b.addService(live)
+
+	// A refresh re-resolves and re-delivers the record: the browse seam does
+	// the same here.
+	b.browse = func(ctx context.Context, domain, svcType string) {
+		b.addService(live)
+	}
+
+	b.mu.Lock()
+	record := b.services[recordKey(live)]
+	record.LastSeen = time.Now().Add(-time.Hour)
+	b.services[recordKey(live)] = record
+	b.mu.Unlock()
+
+	b.refresh(context.Background())
+	b.expire(time.Now())
+
+	if got := len(b.Services()); got != 1 {
+		t.Fatalf("a refreshed record was expired: %d service(s) left", got)
+	}
+}
+
+// A cancellation while browsing must not leave Start waiting on a refresh.
+func TestStartReturnsPromptlyOnCancel(t *testing.T) {
+	b := NewBrowser(BrowserOptions{
+		ServiceTypes: []string{"_tuner._tcp"},
+		Quiet:        true,
+	})
+	b.interval = time.Hour
+	b.browse = func(ctx context.Context, domain, svcType string) {
+		<-ctx.Done()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		b.Start(ctx)
+		close(done)
+	}()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Start did not return after cancellation")
 	}
 }

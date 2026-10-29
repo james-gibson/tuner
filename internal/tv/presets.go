@@ -71,24 +71,38 @@ func BuiltinPresets() map[string]Preset {
 // from stdin. Piping the document straight into tuner-viz rendered nothing
 // (tuner#23).
 func SignalPreset(endpoint string) Preset {
-	source := `tuner signals --endpoint=` + endpoint
+	command, preview := SignalCommands(endpoint)
 	if HasTunerViz() {
 		return Preset{
 			Name:        "signal",
 			Description: "Alert Signal Strength (tuner-viz)",
-			Command:     source + ` --json | tuner-viz signal --stdin --preview`,
+			Command:     command,
 			Watch:       5.0,
-			Preview:     source + ` --json | tuner-viz signal --stdin --width 24 --preview`,
+			Preview:     preview,
 		}
 	}
 	// ASCII fallback via Go.
 	return Preset{
 		Name:        "signal",
 		Description: "Alert Signal Strength",
-		Command:     source,
+		Command:     command,
 		Watch:       5.0,
-		Preview:     source,
+		Preview:     command,
 	}
+}
+
+// SignalCommands returns the channel command and preview that render one
+// smoke-alarm endpoint. Every channel pointed at a smoke-alarm goes through
+// this: the endpoint serves a /status document (targets), not the alert array
+// tuner-viz reads from stdin, so piping the document straight into tuner-viz
+// renders nothing. `tuner signals` decodes it first (tuner#23).
+func SignalCommands(endpoint string) (command, preview string) {
+	source := `tuner signals --endpoint=` + endpoint
+	if HasTunerViz() {
+		return source + ` --json | tuner-viz signal --stdin --preview`,
+			source + ` --json | tuner-viz signal --stdin --width 24 --preview`
+	}
+	return source, source
 }
 
 // TopologyPreset returns a TV channel for federation topology visualization.
