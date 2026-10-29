@@ -136,10 +136,9 @@ func TestParsePort(t *testing.T) {
 }
 
 // Regression for tuner#3: every type in the browse array must be queried
-// within one scan deadline. The old serial scan let the first type consume
-// the whole budget, so the broadcast mode pre-scan (5s) never reached
-// _smoke-alarm._tcp at all.
-func TestScanBrowsesEveryTypeUnderOneDeadline(t *testing.T) {
+// within one refresh deadline. A serial scan let the first type consume the
+// whole budget, so a bounded scan never reached _smoke-alarm._tcp at all.
+func TestRefreshBrowsesEveryTypeUnderOneDeadline(t *testing.T) {
 	b := NewBrowser(BrowserOptions{
 		ServiceTypes: []string{"_tuner._tcp", "_smoke-alarm._tcp", "_adhd-isotope._tcp"},
 		Quiet:        true,
@@ -158,7 +157,7 @@ func TestScanBrowsesEveryTypeUnderOneDeadline(t *testing.T) {
 	// One deadline, shorter than a single browse window.
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	b.scan(ctx)
+	b.refresh(ctx)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -170,8 +169,9 @@ func TestScanBrowsesEveryTypeUnderOneDeadline(t *testing.T) {
 	}
 }
 
-// A scan must not outlive its context even when types are browsed concurrently.
-func TestScanReturnsWhenContextCancelled(t *testing.T) {
+// A refresh must not outlive its context even when types are browsed
+// concurrently.
+func TestRefreshReturnsWhenContextCancelled(t *testing.T) {
 	b := NewBrowser(BrowserOptions{
 		ServiceTypes: []string{"_tuner._tcp", "_smoke-alarm._tcp"},
 		Quiet:        true,
@@ -183,9 +183,9 @@ func TestScanReturnsWhenContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	b.scan(ctx)
+	b.refresh(ctx)
 	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Fatalf("scan took %s, want roughly the 50ms context", elapsed)
+		t.Fatalf("refresh took %s, want roughly the 50ms context", elapsed)
 	}
 }
 

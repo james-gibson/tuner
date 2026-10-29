@@ -386,54 +386,6 @@ func containsIdentity(list []Identity, id Identity) bool {
 	return false
 }
 
-// scan performs one round of mDNS browsing for the configured service types.
-// Every type is browsed concurrently under the same context, so a scan costs
-// one browse window in total however long the array is; each browse runs for
-// up to the browse window or until ctx is canceled.
-func (b *Browser) scan(ctx context.Context) {
-	domain := b.domains[0]
-
-	var wg sync.WaitGroup
-	for _, svcType := range b.serviceTypes {
-		// Skip types that can no longer be queried at all. A type is never
-		// skipped because an earlier type used up its window: they all start
-		// together (tuner#3).
-		select {
-		case <-ctx.Done():
-			if !b.quiet {
-				log.Printf("mdns browser: scan canceled before browsing the full array %v", b.serviceTypes)
-			}
-			wg.Wait()
-			return
-		default:
-		}
-
-		wg.Add(1)
-		go func(st string) {
-			defer wg.Done()
-			b.browseType(ctx, domain, st)
-		}(svcType)
-	}
-	wg.Wait()
-
-	b.mu.RLock()
-	count := len(b.services)
-	b.mu.RUnlock()
-	if !b.quiet {
-		log.Printf("mdns browser: scan complete (%d services tracked)", count)
-	}
-}
-
-// browseType browses one service type for at most the browse window, bounded
-// by ctx.
-func (b *Browser) browseType(ctx context.Context, domain, svcType string) {
-	window := b.browseWindow
-	if window <= 0 {
-		window = defaultBrowseWindow
-	}
-	b.browseWithWindow(ctx, domain, svcType, window)
-}
-
 func (b *Browser) browseWithWindow(ctx context.Context, domain, svcType string, window time.Duration) {
 	browseCtx, cancel := context.WithTimeout(ctx, window)
 	defer cancel()
