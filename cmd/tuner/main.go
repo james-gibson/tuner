@@ -60,11 +60,6 @@ func isAddrInUse(err error) bool {
 		strings.Contains(err.Error(), "bind: can't assign requested address")
 }
 
-// peerScanTimeout bounds the pre-advertising peer scan in broadcast mode. It
-// is a whole-scan budget: the browser browses every configured service type
-// concurrently within it, so the array length does not divide it (tuner#3).
-const peerScanTimeout = 5 * time.Second
-
 var buildVersion string
 
 func version() string {
