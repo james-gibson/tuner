@@ -5,15 +5,44 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/james-gibson/tuner/internal/channelsource"
 	"github.com/james-gibson/tuner/internal/config"
+	"github.com/james-gibson/tuner/internal/mdns"
 )
 
 func newTestServer() *Server {
 	cfg := config.Defaults()
 	return New(Options{Config: cfg, Version: "test"})
+}
+
+// newTestServerWithSource returns a server and a registry holding one
+// discovered smoke-alarm source pointing at endpoint.
+func newTestServerWithSource(t *testing.T, instance, endpoint string) (*Server, *channelsource.Registry) {
+	t.Helper()
+
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		t.Fatalf("parse endpoint: %v", err)
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatalf("parse port: %v", err)
+	}
+
+	registry := channelsource.NewRegistry()
+	registry.Observe(mdns.Service{
+		Name:        instance + "._smoke-alarm._tcp.local.",
+		ServiceType: mdns.SmokeAlarmServiceType,
+		Host:        u.Hostname(),
+		Port:        port,
+	})
+
+	return New(Options{Config: config.Defaults(), Version: "test", Channels: registry}), registry
 }
 
 func TestHandleHealthz(t *testing.T) {
@@ -90,6 +119,144 @@ func TestHandleListChannels(t *testing.T) {
 	}
 	if len(channels) != 3 {
 		t.Fatalf("expected 3 channels, got %d", len(channels))
+	}
+}
+
+func TestHandleListChannelsIncludesDiscovered(t *testing.T) {
+	srv, _ := newTestServerWithSource(t, "smoke-alarm-late", "http://192.168.1.50:18088")
+
+	w := httptest.NewRecorder()
+	srv.HandleListChannels(w, httptest.NewRequest("GET", "/channels", http.NoBody))
+
+	var resp struct {
+		Channels []map[string]any `json:"channels"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	if len(resp.Channels) != 4 {
+		t.Fatalf("expected 3 presets + 1 discovered channel, got %d", len(resp.Channels))
+	}
+
+	last := resp.Channels[len(resp.Channels)-1]
+	if last["name"] != "smoke-alarm-late" || last["type"] != "discovered" {
+		t.Fatalf("unexpected discovered channel entry: %v", last)
+	}
+	if last["endpoint"] != "http://192.168.1.50:18088" {
+		t.Fatalf("unexpected endpoint: %v", last["endpoint"])
+	}
+	if last["status_url"] != "http://192.168.1.50:18088/status" {
+		t.Fatalf("unexpected status_url: %v", last["status_url"])
+	}
+}
+
+func TestHandleStatusCountsDiscovered(t *testing.T) {
+	srv, _ := newTestServerWithSource(t, "smoke-alarm-late", "http://192.168.1.50:18088")
+
+	w := httptest.NewRecorder()
+	srv.HandleStatus(w, httptest.NewRequest("GET", "/status", http.NoBody))
+
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	if channels, ok := resp["channels"].(float64); !ok || channels != 4 {
+		t.Fatalf("expected 4 channels (3 presets + 1 discovered), got %v", resp["channels"])
+	}
+}
+
+func TestHandleChannelDiscoveredSource(t *testing.T) {
+	srv, _ := newTestServerWithSource(t, "smoke-alarm-late", "http://192.168.1.50:18088")
+
+	w := httptest.NewRecorder()
+	srv.HandleChannel(w, httptest.NewRequest("GET", "/channels/smoke-alarm-late", http.NoBody))
+
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	if resp["type"] != "discovered" || resp["instance"] != "smoke-alarm-late" {
+		t.Fatalf("expected a discovered channel, got %v", resp)
+	}
+	if resp["status_url"] != "http://192.168.1.50:18088/status" {
+		t.Fatalf("unexpected status_url: %v", resp["status_url"])
+	}
+}
+
+// Polling a discovered channel returns the instance's current health; the
+// channel is not just a directory listing.
+func TestHandleChannelDiscoveredStatusProxies(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/status" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"service":"ocd-smoke-alarm","ready":true}`))
+	}))
+	defer upstream.Close()
+
+	srv, _ := newTestServerWithSource(t, "smoke-alarm-late", upstream.URL)
+
+	w := httptest.NewRecorder()
+	srv.HandleChannel(w, httptest.NewRequest("GET", "/channels/smoke-alarm-late/status", http.NoBody))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("expected JSON content type, got %q", ct)
+	}
+	var status map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &status); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	if status["service"] != "ocd-smoke-alarm" {
+		t.Fatalf("unexpected proxied status: %v", status)
+	}
+}
+
+// A discovered instance keeps its DNS-SD label, which may contain a slash
+// (lezz-demo seeds are named "cluster/alarm-a"). The channel must still be
+// addressable at the name /channels listed.
+func TestHandleChannelInstanceWithSlash(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/status" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"service":"ocd-smoke-alarm"}`))
+	}))
+	defer upstream.Close()
+
+	srv, _ := newTestServerWithSource(t, "demo/alarm-a", upstream.URL)
+
+	w := httptest.NewRecorder()
+	srv.HandleChannel(w, httptest.NewRequest("GET", "/channels/demo/alarm-a", http.NoBody))
+	var info map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &info); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	if info["type"] != "discovered" || info["instance"] != "demo/alarm-a" {
+		t.Fatalf("slash-named channel is unaddressable: %v", info)
+	}
+
+	w = httptest.NewRecorder()
+	srv.HandleChannel(w, httptest.NewRequest("GET", "/channels/demo/alarm-a/status", http.NoBody))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 from the slash-named source, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleChannelStatusUnknown(t *testing.T) {
+	srv := newTestServer()
+
+	w := httptest.NewRecorder()
+	srv.HandleChannel(w, httptest.NewRequest("GET", "/channels/nobody/status", http.NoBody))
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for an unknown discovered channel, got %d", w.Code)
 	}
 }
 

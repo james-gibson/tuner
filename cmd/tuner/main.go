@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/james-gibson/tuner/internal/channelsource"
 	"github.com/james-gibson/tuner/internal/config"
 	"github.com/james-gibson/tuner/internal/lezzdemo"
 	"github.com/james-gibson/tuner/internal/mdns"
@@ -58,11 +59,6 @@ func isAddrInUse(err error) bool {
 	return strings.Contains(err.Error(), "address already in use") ||
 		strings.Contains(err.Error(), "bind: can't assign requested address")
 }
-
-// peerScanTimeout bounds the pre-advertising peer scan in broadcast mode. It
-// is a whole-scan budget: the browser browses every configured service type
-// concurrently within it, so the array length does not divide it (tuner#3).
-const peerScanTimeout = 5 * time.Second
 
 var buildVersion string
 
@@ -160,10 +156,31 @@ func cmdServe(args []string) {
 	ctx, cancel := ossignal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	// Every discovered _smoke-alarm._tcp instance becomes a live channel
+	// source here. The browser writes into the registry, the server reads it,
+	// and the TV writer subscribes to it; before that shared registry a
+	// post-startup instance only produced a log line (tuner#20).
+	sources := channelsource.NewRegistry()
+
 	srv := server.New(server.Options{
-		Config:  cfg,
-		Version: version(),
+		Config:   cfg,
+		Version:  version(),
+		Channels: sources,
 	})
+
+	// Report every source transition once. The subscriber is attached before
+	// the TV writer so the log line for an arrival precedes the file it wrote.
+	unsubscribeLog := sources.Subscribe(func(event channelsource.Event) {
+		log.Printf("channel source %s: %s at %s",
+			event.Kind, event.Source.Instance, event.Source.Endpoint)
+	})
+	defer unsubscribeLog()
+
+	// Discovered instances get a TV channel as they arrive and lose it when
+	// they depart. Existing preset files are not regenerated: each discovery
+	// only writes its own file, and an unchanged file is left alone.
+	stopTVSync := tv.WatchDiscovered(sources, cableDir(cfg))
+	defer stopTVSync()
 
 	// Start health server — scan upward if the preferred port is occupied.
 	healthLn, healthAddr, err := bindWithRetry(cfg.Health.ListenAddr, 10)
@@ -189,45 +206,16 @@ func cmdServe(args []string) {
 			fatal("broadcast server: %v", err)
 		}
 
-		// Before advertising, scan for any peers that are already running.
-		// This gives the new instance immediate awareness of the existing network.
-		// The timeout is a whole-scan budget: every configured type is browsed
-		// concurrently within it (tuner#3).
-		log.Println("scanning for existing peers before advertising...")
-		peerBrowser := mdns.NewBrowser(mdns.BrowserOptions{
-			ServiceTypes: cfg.MDNS.BrowseTypes(),
-			Domains:      cfg.MDNS.Domains,
-			Interval:     cfg.RefreshDuration(),
-			OnChange: func(svc mdns.Service) {
-				log.Printf("peer discovered: %s %q at %s (txt: %v)",
-					svc.ServiceType, svc.Name, svc.Endpoint(), svc.TXT)
-			},
-		})
-		scanCtx, scanCancel := context.WithTimeout(ctx, peerScanTimeout)
-		peerBrowser.Start(scanCtx)
-		defer scanCancel()
-		if peers := peerBrowser.Endpoints(); len(peers) > 0 {
-			log.Printf("found %d peer endpoint(s) already on the network", len(peers))
-		} else {
-			log.Println("no existing peers found — this instance is first on the network")
-		}
-
-		// Check specifically for smoke-alarm endpoints; fall back to lezz demo registry.
-		smokeAlarmEndpoints := peerBrowser.EndpointsByType(mdns.SmokeAlarmServiceType)
-		if len(smokeAlarmEndpoints) == 0 {
-			if injected := lezzdemo.Seed(peerBrowser); len(injected) > 0 {
-				log.Printf("smoke-alarm: mDNS found none; seeded %d from lezz demo registry", len(injected))
-				smokeAlarmEndpoints = peerBrowser.EndpointsByType(mdns.SmokeAlarmServiceType)
-			}
-		}
-		if len(smokeAlarmEndpoints) == 0 {
-			log.Println("⚠️  WARNING: no smoke-alarm services discovered")
-			log.Println("   preset channels will show network diagnostics only")
-		}
-
-		// mDNS advertisement uses the confirmed bound port.
+		// Advertise and serve before looking at the network. Discovery used to
+		// block both for a five-second scan, so the broadcast listener (and
+		// every channel on it) was unreachable until the scan finished. The
+		// browser now runs continuously alongside serving
+		// (features/tuner-mdns-continuous.feature).
 		advertiser := mdns.NewAdvertiser(mdns.AdvertiserOptions{
-			ServiceName: fmt.Sprintf("%s:%d", "tuner", len(peerBrowser.Services())),
+			// The instance label is the bound port, not a peer count: a count
+			// read from a browser that has not run yet is always zero, which
+			// makes two tuners advertise the same instance name.
+			ServiceName: fmt.Sprintf("tuner:%d", mdns.ParsePort(broadcastAddr)),
 			ServiceType: cfg.MDNS.ServiceType,
 			Port:        mdns.ParsePort(broadcastAddr),
 			TXT:         cfg.MDNS.TXTRecord,
@@ -249,6 +237,39 @@ func cmdServe(args []string) {
 			}
 		}()
 
+		// Peers are discovered while we serve, not before. The browse loop is
+		// continuous, so an instance that starts later still turns up.
+		peerBrowser := mdns.NewBrowser(mdns.BrowserOptions{
+			ServiceTypes: cfg.MDNS.BrowseTypes(),
+			Domains:      cfg.MDNS.Domains,
+			Interval:     cfg.RefreshDuration(),
+			OnChange: func(svc mdns.Service) {
+				if _, ok := sources.Observe(svc); ok {
+					return // reported by the registry subscriber
+				}
+				log.Printf("peer discovered: %s %q at %s (txt: %v)",
+					svc.ServiceType, svc.Name, svc.Endpoint(), svc.TXT)
+			},
+			OnRemove: func(svc mdns.Service) {
+				if _, ok := sources.Retire(svc); ok {
+					return // reported by the registry subscriber
+				}
+				// A smoke-alarm retirement that did not remove a source is the
+				// stale record of an instance that rebound its health port.
+				// The live source stays; there is nothing to report.
+				if svc.ServiceType == mdns.SmokeAlarmServiceType {
+					return
+				}
+				log.Printf("peer departed: %s %q at %s", svc.ServiceType, svc.Name, svc.Endpoint())
+			},
+		})
+		go peerBrowser.Start(ctx)
+
+		if injected := lezzdemo.Seed(peerBrowser); len(injected) > 0 {
+			log.Printf("smoke-alarm: seeded %d from lezz demo registry", len(injected))
+		}
+		go warnIfNoSmokeAlarm(ctx, peerBrowser, "   preset channels will show network diagnostics only")
+
 		<-ctx.Done()
 		log.Println("shutting down...")
 		shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -263,23 +284,30 @@ func cmdServe(args []string) {
 			Domains:      cfg.MDNS.Domains,
 			Interval:     cfg.RefreshDuration(),
 			OnChange: func(svc mdns.Service) {
+				if _, ok := sources.Observe(svc); ok {
+					return // reported by the registry subscriber
+				}
 				log.Printf("discovered: %s at %s", svc.ServiceType, svc.Endpoint())
+			},
+			OnRemove: func(svc mdns.Service) {
+				if _, ok := sources.Retire(svc); ok {
+					return // reported by the registry subscriber
+				}
+				if svc.ServiceType == mdns.SmokeAlarmServiceType {
+					return
+				}
+				log.Printf("discovered peer departed: %s at %s", svc.ServiceType, svc.Endpoint())
 			},
 		})
 		go browser.Start(ctx)
 
-		// Wait briefly then check if any smoke-alarm endpoints were found.
-		time.Sleep(6 * time.Second) // Allow initial scan to complete
-		smokeAlarmEndpoints := browser.EndpointsByType(mdns.SmokeAlarmServiceType)
-		if len(smokeAlarmEndpoints) == 0 {
-			if injected := lezzdemo.Seed(browser); len(injected) > 0 {
-				log.Printf("smoke-alarm: mDNS found none; seeded %d from lezz demo registry", len(injected))
-			} else {
-				log.Println("⚠️  WARNING: no smoke-alarm services discovered on local network")
-				log.Println("   Tuner is running but has no upstream data source")
-				log.Println("   Ensure ocd-smoke-alarm is running with tuner.advertise=true")
-			}
+		// Discovery is continuous, so a missing source is a warning now, not a
+		// reason to block startup for six seconds waiting for one.
+		if injected := lezzdemo.Seed(browser); len(injected) > 0 {
+			log.Printf("smoke-alarm: seeded %d from lezz demo registry", len(injected))
 		}
+		go warnIfNoSmokeAlarm(ctx, browser,
+			"   Ensure ocd-smoke-alarm is running with tuner.advertise=true")
 
 		<-ctx.Done()
 		log.Println("shutting down...")
@@ -290,6 +318,24 @@ func cmdServe(args []string) {
 	if err := healthSrv.Shutdown(shutCtx); err != nil {
 		log.Printf("health server shutdown: %v", err)
 	}
+}
+
+// warnIfNoSmokeAlarm reports a missing upstream once, without blocking startup.
+// The browse loop keeps running, so the warning is about this moment, not the
+// rest of the process's life.
+func warnIfNoSmokeAlarm(ctx context.Context, browser *mdns.Browser, hint string) {
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+		return
+	}
+	if len(browser.EndpointsByType(mdns.SmokeAlarmServiceType)) > 0 {
+		return
+	}
+	log.Println("⚠️  no smoke-alarm services discovered yet — still watching")
+	log.Println(hint)
 }
 
 func cmdChannel(args []string) {
@@ -703,6 +749,15 @@ func cmdTV(args []string) {
 		fmt.Fprintln(os.Stderr, "  sync    Write all preset channels to cable directory")
 		os.Exit(1)
 	}
+}
+
+// cableDir is the directory tuner manages channels in: the isolated tuner
+// directory when configured, otherwise the shared cable directory.
+func cableDir(cfg *config.Config) string {
+	if cfg.TV.TunerDir != "" {
+		return cfg.TV.TunerDir
+	}
+	return cfg.TV.CableDir
 }
 
 func expandHome(path string) string {
