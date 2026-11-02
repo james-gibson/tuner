@@ -111,6 +111,16 @@ func (m MDNSConfig) BrowseTypes() []string {
 type ChannelsConfig struct {
 	Preset []PresetChannel `yaml:"preset"`
 	Custom []CustomChannel `yaml:"custom"`
+	Notes  []NotesChannel  `yaml:"notes"`
+}
+
+// NotesChannel is an RSS-shaped feed of prep notes — questions worth asking and
+// gaps worth expecting. The content stays where it is authored; tuner surfaces
+// the latest items to whoever is watching.
+type NotesChannel struct {
+	Name    string `yaml:"name"`
+	Source  string `yaml:"source"`  // path, file://, http(s)://
+	Refresh string `yaml:"refresh"` // e.g. "30s"; the cache lifetime
 }
 
 // PresetChannel selects a built-in channel by name.

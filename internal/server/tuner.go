@@ -19,6 +19,7 @@ import (
 	"github.com/james-gibson/tuner/internal/config"
 	"github.com/james-gibson/tuner/internal/custom"
 	"github.com/james-gibson/tuner/internal/llms"
+	"github.com/james-gibson/tuner/internal/notes"
 )
 
 // Server handles HTTP endpoints for Tuner.
@@ -37,6 +38,8 @@ type Server struct {
 
 	mu       sync.RWMutex
 	audience map[string]AudienceMetric
+
+	notes *notes.Store
 }
 
 // AudienceMetric holds broadcaster-reported audience data.
@@ -66,6 +69,7 @@ func New(opts Options) *Server {
 		sources:  opts.Channels,
 		custom:   custom.New(opts.Config.Channels.Custom),
 		audience: make(map[string]AudienceMetric),
+		notes:    notes.NewStore(30 * time.Second),
 	}
 }
 
@@ -131,6 +135,13 @@ func (s *Server) HandleListChannels(w http.ResponseWriter, _ *http.Request) {
 		}
 		channels = append(channels, entry)
 	}
+	for _, n := range s.cfg.Channels.Notes {
+		channels = append(channels, map[string]any{
+			"name":   n.Name,
+			"type":   "notes",
+			"source": n.Source,
+		})
+	}
 	for _, src := range s.discoveredSources() {
 		channels = append(channels, map[string]any{
 			"name":       src.Instance,
@@ -146,6 +157,25 @@ func (s *Server) HandleListChannels(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) HandleChannel(w http.ResponseWriter, r *http.Request) {
 	// /channels/{name}[/{action}]
 	name, action := splitChannelPath(r.URL.Path)
+
+	// A notes channel owns its own default and "sse" routes: the generic
+	// handlers below only know presets.
+	if src, ok := s.notesSource(name); ok && (action == "" || action == "sse") {
+		if action == "sse" {
+			s.handleNotesSSE(w, r, name, src)
+			return
+		}
+		feed, err := s.notes.Get(name, src)
+		if err != nil {
+			writeJSON(w, map[string]any{"channel": name, "type": "notes", "error": err.Error()})
+			return
+		}
+		writeJSON(w, map[string]any{
+			"channel": name, "type": "notes", "title": feed.Title,
+			"items": feed.Items, "count": len(feed.Items), "fetched": feed.Fetched,
+		})
+		return
+	}
 
 	// A configured custom channel owns its data routes: a listed channel has to
 	// answer with its source, not the generic "available" reply (tuner#30). The
@@ -264,6 +294,65 @@ func (s *Server) discoveredSources() []channelsource.Source {
 		return nil
 	}
 	return s.sources.List()
+}
+
+func (s *Server) notesSource(name string) (string, bool) {
+	for _, n := range s.cfg.Channels.Notes {
+		if n.Name == name {
+			return n.Source, true
+		}
+	}
+	return "", false
+}
+
+// handleNotesSSE streams a notes feed: the current items once, then any new item as
+// it appears. A note is ephemeral on the wire — the feed is the record, the channel
+// is the announcement.
+func (s *Server) handleNotesSSE(w http.ResponseWriter, r *http.Request, name, source string) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "SSE not supported", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	seen := map[string]bool{}
+	emit := func(feed notes.Feed) {
+		for _, item := range feed.Items {
+			if item.ID == "" || seen[item.ID] {
+				continue
+			}
+			seen[item.ID] = true
+			payload, err := json.Marshal(item)
+			if err != nil {
+				continue
+			}
+			_, _ = fmt.Fprintf(w, "event: item\ndata: %s\n\n", payload)
+		}
+		flusher.Flush()
+	}
+
+	if feed, err := s.notes.Get(name, source); err == nil {
+		emit(feed)
+	} else {
+		_, _ = fmt.Fprintf(w, "event: warning\ndata: {\"channel\":%q,\"error\":%q}\n\n", name, err.Error()) //nolint:gosec // G705: %q escapes before it reaches the body
+		flusher.Flush()
+	}
+
+	ticker := time.NewTicker(20 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			if feed, err := s.notes.Get(name, source); err == nil {
+				emit(feed)
+			}
+		case <-r.Context().Done():
+			return
+		}
+	}
 }
 
 // handleCustomSnapshot serves the current value of a custom channel, fetching it
@@ -428,6 +517,9 @@ func (s *Server) HandleLLMSTxt(w http.ResponseWriter, _ *http.Request) {
 			Description: fmt.Sprintf("%s monitoring", p.Name),
 		})
 	}
+	// Notes channels are deliberately absent from llms.txt. They carry a lab's
+	// working questions and must not become a discovery surface -- see
+	// kb/.opencode/skills/unshippable-offense.
 	for _, c := range s.cfg.Channels.Custom {
 		description := fmt.Sprintf("custom %s channel", c.Source.Type)
 		if err := s.custom.ConfigError(c.Name); err != nil {
