@@ -343,7 +343,10 @@ func cmdChannel(args []string) {
 		fatal("usage: tuner channel <name> [--config=...] [--launch]")
 	}
 	name := args[0]
-	configPath := flagValue(args[1:], "config", "tuner.config.yaml")
+	// Config is optional for every subcommand, this one included: "" keeps the
+	// built-in defaults, so `tuner channel <name>` works on a machine with no
+	// config file in the cwd (tuner#16).
+	configPath := flagValue(args[1:], "config", "")
 	launchFlag := flagPresent(args[1:], "launch")
 
 	cfg, err := config.Load(configPath)
