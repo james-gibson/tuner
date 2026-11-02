@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -366,5 +367,304 @@ func TestHandleLLMSTxt(t *testing.T) {
 	}
 	if w.Header().Get("Content-Type") != "text/markdown; charset=utf-8" {
 		t.Fatalf("expected markdown content type, got %q", w.Header().Get("Content-Type"))
+	}
+}
+
+// newTestServerWithCustom returns a server whose config declares the given
+// channels.custom entries.
+func newTestServerWithCustom(chs ...config.CustomChannel) *Server {
+	cfg := config.Defaults()
+	cfg.Channels.Custom = chs
+	return New(Options{Config: cfg, Version: "test"})
+}
+
+func customChannel(name, kind string) config.CustomChannel {
+	return config.CustomChannel{Name: name, Source: config.SourceConfig{Type: kind}}
+}
+
+// TestCustomChannelServesItsSource is the tuner#30 regression: a listed custom
+// channel used to answer "status: available" without ever reading its source.
+func TestCustomChannelServesItsSource(t *testing.T) {
+	c := customChannel("state", config.SourceCommand)
+	c.Source.Command = `echo '{"state":"ok"}'`
+	srv := newTestServerWithCustom(c)
+
+	w := httptest.NewRecorder()
+	srv.HandleChannel(w, httptest.NewRequest("GET", "/channels/state", http.NoBody))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body)
+	}
+	var resp struct {
+		Channel string          `json:"channel"`
+		Type    string          `json:"type"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response is not a snapshot: %v (%s)", err, w.Body)
+	}
+	if resp.Channel != "state" || resp.Type != config.SourceCommand {
+		t.Fatalf("unexpected snapshot header: %+v", resp)
+	}
+	if !strings.Contains(string(resp.Data), `"ok"`) {
+		t.Fatalf("snapshot does not carry the source's data: %s", resp.Data)
+	}
+}
+
+// TestCustomChannelSourceErrorIsBadGateway keeps a dead source from reading as
+// an empty channel: the failure is the answer.
+func TestCustomChannelSourceErrorIsBadGateway(t *testing.T) {
+	// Port 1 on loopback refuses connections.
+	srv := newTestServerWithCustom(config.CustomChannel{
+		Name:   "dead",
+		Source: config.SourceConfig{Type: config.SourceHTTP, URL: "http://127.0.0.1:1/"},
+	})
+
+	w := httptest.NewRecorder()
+	srv.HandleChannel(w, httptest.NewRequest("GET", "/channels/dead", http.NoBody))
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d: %s", w.Code, w.Body)
+	}
+	if !strings.Contains(w.Body.String(), "error") {
+		t.Fatalf("502 does not say what failed: %s", w.Body)
+	}
+}
+
+func TestCustomChannelMisconfiguredReportsProblem(t *testing.T) {
+	srv := newTestServerWithCustom(customChannel("typo", "htp"))
+
+	w := httptest.NewRecorder()
+	srv.HandleChannel(w, httptest.NewRequest("GET", "/channels/typo", http.NoBody))
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d: %s", w.Code, w.Body)
+	}
+	if !strings.Contains(w.Body.String(), "unknown source type") {
+		t.Fatalf("502 does not name the problem: %s", w.Body)
+	}
+}
+
+// TestCustomWebhookIngestAndServe covers the push direction: before the first
+// push the channel says it is waiting, after one it serves the value.
+func TestCustomWebhookIngestAndServe(t *testing.T) {
+	srv := newTestServerWithCustom(customChannel("push", config.SourceWebhook))
+
+	w := httptest.NewRecorder()
+	srv.HandleChannel(w, httptest.NewRequest("GET", "/channels/push", http.NoBody))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "waiting") {
+		t.Fatalf("a channel nothing has pushed to should be waiting, got %d: %s", w.Code, w.Body)
+	}
+
+	req := httptest.NewRequest("POST", "/channels/push/ingest", strings.NewReader(`{"alarm":"ringing"}`))
+	req.RemoteAddr = "127.0.0.1:54321"
+	w = httptest.NewRecorder()
+	srv.HandleChannel(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("loopback ingest: expected 200, got %d: %s", w.Code, w.Body)
+	}
+
+	w = httptest.NewRecorder()
+	srv.HandleChannel(w, httptest.NewRequest("GET", "/channels/push", http.NoBody))
+	if !strings.Contains(w.Body.String(), "ringing") {
+		t.Fatalf("pushed value is not served: %s", w.Body)
+	}
+}
+
+// TestCustomIngestRefusesRemoteWithoutToken is the unshippable-offense guard: no
+// token, not this machine, no write. The refusal happens before the body is
+// read, and the channel keeps whatever it had.
+func TestCustomIngestRefusesRemoteWithoutToken(t *testing.T) {
+	srv := newTestServerWithCustom(customChannel("push", config.SourceWebhook))
+
+	req := httptest.NewRequest("POST", "/channels/push/ingest", strings.NewReader(`{"alarm":"ringing"}`))
+	req.RemoteAddr = "203.0.113.5:41234" // a LAN peer, not loopback
+	w := httptest.NewRecorder()
+	srv.HandleChannel(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for a remote tokenless ingest, got %d: %s", w.Code, w.Body)
+	}
+
+	w = httptest.NewRecorder()
+	srv.HandleChannel(w, httptest.NewRequest("GET", "/channels/push", http.NoBody))
+	if strings.Contains(w.Body.String(), "ringing") {
+		t.Fatalf("a refused push was stored anyway: %s", w.Body)
+	}
+}
+
+func TestCustomIngestRequiresConfiguredToken(t *testing.T) {
+	c := customChannel("push", config.SourceWebhook)
+	c.Auth = &config.AuthConfig{Type: "bearer", Token: "s3cret"}
+	srv := newTestServerWithCustom(c)
+
+	send := func(header string) int {
+		req := httptest.NewRequest("POST", "/channels/push/ingest", strings.NewReader(`{"alarm":"ringing"}`))
+		req.RemoteAddr = "203.0.113.5:41234" // a token admits a remote peer
+		if header != "" {
+			req.Header.Set("Authorization", header)
+		}
+		w := httptest.NewRecorder()
+		srv.HandleChannel(w, req)
+		return w.Code
+	}
+
+	if code := send(""); code != http.StatusUnauthorized {
+		t.Fatalf("no token: expected 401, got %d", code)
+	}
+	if code := send("Bearer wrong"); code != http.StatusUnauthorized {
+		t.Fatalf("wrong token: expected 401, got %d", code)
+	}
+	if code := send("Bearer s3cret"); code != http.StatusOK {
+		t.Fatalf("right token: expected 200, got %d", code)
+	}
+}
+
+func TestCustomIngestOnlyForWebhookChannels(t *testing.T) {
+	c := customChannel("poll", config.SourceCommand)
+	c.Source.Command = "echo hi"
+	srv := newTestServerWithCustom(c)
+
+	req := httptest.NewRequest("POST", "/channels/poll/ingest", strings.NewReader(`{}`))
+	req.RemoteAddr = "127.0.0.1:54321"
+	w := httptest.NewRecorder()
+	srv.HandleChannel(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405 for a pull channel ingest, got %d: %s", w.Code, w.Body)
+	}
+}
+
+func TestCustomIngestRejectsGet(t *testing.T) {
+	srv := newTestServerWithCustom(customChannel("push", config.SourceWebhook))
+
+	req := httptest.NewRequest("GET", "/channels/push/ingest", http.NoBody)
+	req.RemoteAddr = "127.0.0.1:54321"
+	w := httptest.NewRecorder()
+	srv.HandleChannel(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", w.Code)
+	}
+	if w.Header().Get("Allow") != http.MethodPost {
+		t.Fatalf("expected Allow: POST, got %q", w.Header().Get("Allow"))
+	}
+}
+
+// TestCustomChannelSSEStreamsSnapshot covers the pull-a-push-channel shape a
+// watching client uses: the current value arrives as an event.
+func TestCustomChannelSSEStreamsSnapshot(t *testing.T) {
+	srv := newTestServerWithCustom(customChannel("push", config.SourceWebhook))
+	if _, err := srv.custom.Ingest("push", []byte(`{"alarm":"ringing"}`)); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(srv.HandleChannel))
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/channels/push/sse")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if got := resp.Header.Get("Content-Type"); got != "text/event-stream" {
+		t.Fatalf("expected an event stream, got %q", got)
+	}
+
+	reader := bufio.NewReader(resp.Body)
+	var event, data string
+	for i := 0; i < 10; i++ {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read event: %v", err)
+		}
+		line = strings.TrimSpace(line)
+		if v, ok := strings.CutPrefix(line, "event: "); ok {
+			event = v
+		}
+		if v, ok := strings.CutPrefix(line, "data: "); ok {
+			data = v
+		}
+		if event != "" && data != "" {
+			break
+		}
+	}
+	if event != "snapshot" {
+		t.Fatalf("expected a snapshot event, got %q", event)
+	}
+	if !strings.Contains(data, "ringing") {
+		t.Fatalf("snapshot event does not carry the value: %s", data)
+	}
+}
+
+// TestCustomChannelKeepsBroadcastActions: owning the data routes must not take
+// the channel off the broadcast surface (audience, caller).
+func TestCustomChannelKeepsBroadcastActions(t *testing.T) {
+	srv := newTestServerWithCustom(customChannel("push", config.SourceWebhook))
+
+	body := `{"count":3,"signal":0.5}`
+	req := httptest.NewRequest("POST", "/channels/push/audience", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.HandleChannel(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body)
+	}
+}
+
+// TestIngestOnPresetIsNotFound: only a configured webhook channel has an ingest
+// route. A preset must not answer a push with the generic "available" reply.
+func TestIngestOnPresetIsNotFound(t *testing.T) {
+	srv := newTestServer()
+
+	req := httptest.NewRequest("POST", "/channels/ntp/ingest", strings.NewReader(`{}`))
+	req.RemoteAddr = "127.0.0.1:54321"
+	w := httptest.NewRecorder()
+	srv.HandleChannel(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body)
+	}
+}
+
+// TestListChannelsMarksMisconfiguredCustom: the discovery surface must not
+// advertise a channel that cannot answer without saying so (tuner#30).
+func TestListChannelsMarksMisconfiguredCustom(t *testing.T) {
+	srv := newTestServerWithCustom(customChannel("typo", "htp"))
+
+	w := httptest.NewRecorder()
+	srv.HandleListChannels(w, httptest.NewRequest("GET", "/channels", http.NoBody))
+
+	var resp struct {
+		Channels []struct {
+			Name   string `json:"name"`
+			Status string `json:"status"`
+			Error  string `json:"error"`
+		} `json:"channels"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	for _, c := range resp.Channels {
+		if c.Name != "typo" {
+			continue
+		}
+		if c.Status != "misconfigured" || !strings.Contains(c.Error, "unknown source type") {
+			t.Fatalf("misconfigured channel listed as healthy: %+v", c)
+		}
+		return
+	}
+	t.Fatal("the custom channel is missing from /channels")
+}
+
+func TestLLMSTxtMarksMisconfiguredCustom(t *testing.T) {
+	srv := newTestServerWithCustom(customChannel("typo", "htp"))
+
+	w := httptest.NewRecorder()
+	srv.HandleLLMSTxt(w, httptest.NewRequest("GET", "/llms.txt", http.NoBody))
+
+	if !strings.Contains(w.Body.String(), "misconfigured") {
+		t.Fatalf("llms.txt advertises an unservable channel as if it could answer:\n%s", w.Body)
 	}
 }

@@ -18,6 +18,7 @@ import (
 
 	"github.com/james-gibson/tuner/internal/channelsource"
 	"github.com/james-gibson/tuner/internal/config"
+	"github.com/james-gibson/tuner/internal/custom"
 	"github.com/james-gibson/tuner/internal/lezzdemo"
 	"github.com/james-gibson/tuner/internal/mdns"
 	"github.com/james-gibson/tuner/internal/server"
@@ -152,6 +153,19 @@ func cmdServe(args []string) {
 	}
 
 	log.Printf("tuner %s starting in %s mode", version(), cfg.Mode) //nolint:gosec // G706: mode is validated against a closed set of constants
+
+	// A custom channel is a channel: in broadcast mode, say at startup what is
+	// wrong with one, or why its ingest route will refuse a push, rather than
+	// only when a client asks. Neither is fatal — the channel reports the
+	// problem itself, and /channels marks it misconfigured.
+	if cfg.Mode == config.ModeBroadcast {
+		for _, problem := range custom.Validate(cfg.Channels.Custom) {
+			log.Printf("custom channel config: %v", problem)
+		}
+		for _, notice := range custom.ExposureProblems(cfg.Channels.Custom, cfg.Broadcast.Listen) {
+			log.Printf("⚠️  %s", notice) //nolint:gosec // G706: the notice is built from the operator's own config, not request input
+		}
+	}
 
 	ctx, cancel := ossignal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -450,7 +464,12 @@ func cmdList(_ []string) {
 	for _, p := range cfg.Channels.Preset {
 		fmt.Printf("  [preset] %s\n", p.Name)
 	}
+	customChannels := custom.New(cfg.Channels.Custom)
 	for _, c := range cfg.Channels.Custom {
+		if err := customChannels.ConfigError(c.Name); err != nil {
+			fmt.Printf("  [custom] %s (%v)\n", c.Name, err)
+			continue
+		}
 		fmt.Printf("  [custom] %s (%s)\n", c.Name, c.Source.Type)
 	}
 }
@@ -797,6 +816,12 @@ func cmdValidate(args []string) {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		fatal("config error: %v", err)
+	}
+	if problems := custom.Validate(cfg.Channels.Custom); len(problems) > 0 {
+		for _, problem := range problems {
+			fmt.Fprintf(os.Stderr, "error: %v\n", problem)
+		}
+		fatal("%d invalid custom channel(s)", len(problems))
 	}
 	fmt.Printf("config OK: version=%s mode=%s channels=%d\n",
 		cfg.Version, cfg.Mode,
