@@ -1,5 +1,14 @@
-# Next-steps record — spec-only, no implementation yet (tuner has no Go code
-# for mDNS/MCP discovery or the feature browser; see internal/lezzdemo).
+# Next-steps record — spec-only: none of this is verified behaviour yet.
+# The discovery half exists (internal/mdns/browser.go browses _adhd-isotope._tcp,
+# internal/channelsource keeps each instance with its role and trust_rung); there
+# is no MCP client, so no call below can be made. Tracked as tuner#37.
+#
+# adhd side: adhd.features.* and adhd.skills.certified are declared, absent
+# (adhd#24 closed as @red; adhd#39 open; lab-safety sheets/adhd.md §16).
+# Not a delivery date — a surface is not permissible until it is declared, and
+# these are declared absent. "Declared but not served" is an answer tuner has to
+# handle, not a dependency that blocks this file.
+#
 # ADHD advertises its MCP endpoint as _adhd-isotope._tcp (adhd/internal/headless/server.go),
 # not _adhd._tcp.
 

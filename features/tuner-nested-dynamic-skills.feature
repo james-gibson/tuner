@@ -13,7 +13,9 @@
 #   adhd         exposes the certified surface (adhd.skills.certified)
 #   tuner        creates the skills, nests them, and publishes the inventory
 #
-# The adhd side of that surface is declared, absent (james-gibson/tuner#13).
+# The adhd side of that surface is declared, absent (adhd#24 closed as @red;
+# adhd#39 open; lab-safety sheets/adhd.md §16). That is a policy verdict, not a
+# delivery date: this file is spec-only on tuner's side too.
 
 @optional
 Feature: Tuner Nested Dynamic Skills — Creation, Composition and Publication
