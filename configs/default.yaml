@@ -43,9 +43,9 @@ channels:
       targets:
         - 8.8.8.8
       interval: 2s
-  custom:
-    - name: ocd-mdns
   # custom:
+  #   # Custom channels are served from their own source, so a declaration
+  #   # needs one. Nothing is declared by default; the four shapes are:
   #   - name: github-actions
   #     source:
   #       type: http
@@ -56,6 +56,30 @@ channels:
   #     refresh: "30s"
   #     theme:
   #       color: "#FF6B6B"
+  #
+  #   # sse: tuner reconnects per refresh and keeps the first event's data.
+  #   - name: smoke-alarm-stream
+  #     source:
+  #       type: sse
+  #       url: "http://127.0.0.1:8080/events"
+  #     refresh: "15s"
+  #
+  #   # command: stdout, parsed as JSON when it is JSON, lines otherwise.
+  #   - name: lab-state
+  #     source:
+  #       type: command
+  #       command: "kb lab state --json"
+  #     refresh: "30s"
+  #
+  #   # webhook: POST /channels/<name>/ingest. With auth.token set the push must
+  #   # carry `Authorization: Bearer <token>`; without one it is accepted from
+  #   # loopback only, whatever the broadcast listener is bound to.
+  #   - name: alarm-push
+  #     source:
+  #       type: webhook
+  #     auth:
+  #       type: bearer
+  #       token: "${TUNER_INGEST_TOKEN}"
 
 signal:
   max_age: "30m"

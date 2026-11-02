@@ -39,6 +39,56 @@ Built-in channel types:
 | `ping` | ICMP round-trip latency |
 | custom | User-defined signal sources |
 
+### Custom channels
+
+A `channels.custom` entry is a channel in its own right: it is listed on
+`/channels`, and its data comes from one of four source types.
+
+| `source.type` | How the value arrives |
+|---------------|-----------------------|
+| `command` | `sh -c <command>`, stdout parsed as JSON or lines |
+| `http` | polled `GET <url>`, body parsed as JSON or lines |
+| `sse` | the first event of `<url>`, reconnected once per `refresh` |
+| `webhook` | pushed to tuner by a client |
+
+```yaml
+channels:
+  custom:
+    - name: lab-state
+      source:
+        type: http
+        url: http://127.0.0.1:8080/state
+      auth:
+        type: bearer
+        token: "${LAB_TOKEN}"   # sent as a bearer token to the source
+      refresh: 30s
+
+    - name: alarm-push
+      source:
+        type: webhook
+```
+
+```sh
+curl http://127.0.0.1:58093/channels/lab-state        # current snapshot
+curl -N http://127.0.0.1:58093/channels/lab-state/sse # snapshot events
+curl -X POST http://127.0.0.1:58093/channels/alarm-push/ingest \
+     -H 'Content-Type: application/json' -d '{"alarm":"ringing"}'
+```
+
+The snapshot is cached for the channel's `refresh` (10s by default), so a
+watching client polls tuner, never the source. A source that fails is a `502`
+carrying the reason, not an empty channel. A `command` source runs the configured
+command when a client asks for the channel — at most once per `refresh` — so
+name only commands you are willing to have a reader run.
+
+`POST /channels/<name>/ingest` is the only write route on the broadcast surface,
+so a `webhook` channel is guarded twice. With `auth.token` set, the push must
+carry `Authorization: Bearer <token>`. Without one, the push must come from this
+machine: a tokenless ingest accepts loopback only, and refuses a remote peer with
+`403` whatever the listener address is. An unauthenticated public ingest is
+therefore not a configuration tuner can be talked into — see
+`features/tuner-custom-channels.feature`.
+
 ---
 
 ## Quick Start

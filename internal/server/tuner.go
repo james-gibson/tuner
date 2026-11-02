@@ -1,10 +1,15 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -12,6 +17,7 @@ import (
 
 	"github.com/james-gibson/tuner/internal/channelsource"
 	"github.com/james-gibson/tuner/internal/config"
+	"github.com/james-gibson/tuner/internal/custom"
 	"github.com/james-gibson/tuner/internal/llms"
 )
 
@@ -24,6 +30,10 @@ type Server struct {
 	// sources is the set of channel sources discovered via mDNS. It may be
 	// nil, in which case only configured presets and custom channels exist.
 	sources *channelsource.Registry
+
+	// custom is the configured channels.custom set: the channels whose data
+	// comes from a command, an HTTP poll, an SSE subscription, or an ingest.
+	custom *custom.Set
 
 	mu       sync.RWMutex
 	audience map[string]AudienceMetric
@@ -54,6 +64,7 @@ func New(opts Options) *Server {
 		version:  opts.Version,
 		startAt:  time.Now(),
 		sources:  opts.Channels,
+		custom:   custom.New(opts.Config.Channels.Custom),
 		audience: make(map[string]AudienceMetric),
 	}
 }
@@ -107,11 +118,18 @@ func (s *Server) HandleListChannels(w http.ResponseWriter, _ *http.Request) {
 		})
 	}
 	for _, c := range s.cfg.Channels.Custom {
-		channels = append(channels, map[string]any{
+		entry := map[string]any{
 			"name":   c.Name,
 			"type":   "custom",
 			"source": c.Source.Type,
-		})
+		}
+		// A channel that cannot serve says so where it is advertised, rather
+		// than being listed as one that can (tuner#30).
+		if err := s.custom.ConfigError(c.Name); err != nil {
+			entry["status"] = "misconfigured"
+			entry["error"] = err.Error()
+		}
+		channels = append(channels, entry)
 	}
 	for _, src := range s.discoveredSources() {
 		channels = append(channels, map[string]any{
@@ -129,9 +147,31 @@ func (s *Server) HandleChannel(w http.ResponseWriter, r *http.Request) {
 	// /channels/{name}[/{action}]
 	name, action := splitChannelPath(r.URL.Path)
 
+	// A configured custom channel owns its data routes: a listed channel has to
+	// answer with its source, not the generic "available" reply (tuner#30). The
+	// broadcast-wide actions (status, caller, audience) still fall through.
+	if info, ok := s.custom.Info(name); ok {
+		switch action {
+		case "":
+			s.handleCustomSnapshot(w, r, info)
+			return
+		case "sse":
+			s.handleCustomSSE(w, r, info)
+			return
+		case "ingest":
+			s.handleCustomIngest(w, r, info)
+			return
+		}
+	}
+
 	switch action {
 	case "sse":
 		s.handleChannelSSE(w, r, name)
+		return
+	case "ingest":
+		// Only a configured webhook channel has an ingest route; reaching here
+		// means the name is not one (a preset or a discovered instance).
+		http.Error(w, "no webhook channel named "+name, http.StatusNotFound)
 		return
 	case "status":
 		s.handleChannelStatus(w, r, name)
@@ -175,7 +215,7 @@ func (s *Server) HandleChannel(w http.ResponseWriter, r *http.Request) {
 // -- splitting at the first slash would make that channel unaddressable.
 func splitChannelPath(path string) (name, action string) {
 	path = strings.TrimPrefix(path, "/channels/")
-	for _, suffix := range []string{"/sse", "/status", "/caller", "/audience"} {
+	for _, suffix := range []string{"/sse", "/status", "/caller", "/audience", "/ingest"} {
 		if strings.HasSuffix(path, suffix) {
 			return strings.TrimSuffix(path, suffix), strings.TrimPrefix(suffix, "/")
 		}
@@ -226,6 +266,151 @@ func (s *Server) discoveredSources() []channelsource.Source {
 	return s.sources.List()
 }
 
+// handleCustomSnapshot serves the current value of a custom channel, fetching it
+// from the configured source if the cached one has expired.
+func (s *Server) handleCustomSnapshot(w http.ResponseWriter, r *http.Request, info custom.Info) {
+	snap, err := s.custom.Snapshot(r.Context(), info.Name)
+	switch {
+	case errors.Is(err, custom.ErrNoData):
+		// Nothing has been pushed to a webhook channel yet. That is a normal
+		// state for a push channel, not a failure.
+		writeJSON(w, map[string]any{
+			"channel": info.Name,
+			"type":    info.Type,
+			"status":  "waiting",
+		})
+	case err != nil:
+		log.Printf("custom channel %q: %v", info.Name, err) //nolint:gosec // G706: %q escapes the channel name
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"channel": info.Name,
+			"type":    info.Type,
+			"status":  "error",
+			"error":   err.Error(),
+		})
+	default:
+		writeJSON(w, snap)
+	}
+}
+
+// handleCustomSSE streams a custom channel: the current snapshot, then each new
+// one as the source changes. A watching client polls tuner, never the source.
+func (s *Server) handleCustomSSE(w http.ResponseWriter, r *http.Request, info custom.Info) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "SSE not supported", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	var last []byte
+	emit := func() {
+		snap, err := s.custom.Snapshot(r.Context(), info.Name)
+		if err != nil {
+			if errors.Is(err, custom.ErrNoData) {
+				return // a push channel with nothing pushed yet; wait
+			}
+			// %q Go-quotes the name and error, so neither can break the frame.
+			_, _ = fmt.Fprintf(w, "event: warning\ndata: {\"channel\":%q,\"error\":%q}\n\n", info.Name, err.Error()) //nolint:gosec // G705: %q escapes before it reaches the body
+			flusher.Flush()
+			return
+		}
+		payload, err := json.Marshal(snap)
+		if err != nil || bytes.Equal(payload, last) {
+			return
+		}
+		last = payload
+		_, _ = fmt.Fprintf(w, "event: snapshot\ndata: %s\n\n", payload)
+		flusher.Flush()
+	}
+
+	emit()
+
+	// The tick is the channel's own refresh: a client is never told to look
+	// faster than tuner is willing to fetch.
+	ticker := time.NewTicker(info.Refresh)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			emit()
+		case <-r.Context().Done():
+			return
+		}
+	}
+}
+
+// handleCustomIngest accepts one pushed value for a webhook channel.
+//
+// This is the only write route on the broadcast surface, so it is guarded twice.
+// A channel with an auth token requires that token (a bearer secret, the same
+// one used to fetch a pull source). A channel without one accepts a push only
+// from this machine: ingest is local by construction, and a listener reachable
+// from the LAN must not turn a missing token into an open write endpoint. That
+// makes the offense -- an unauthenticated public ingest -- unrepresentable
+// rather than merely logged; see kb/.opencode/skills/unshippable-offense.
+func (s *Server) handleCustomIngest(w http.ResponseWriter, r *http.Request, info custom.Info) {
+	if info.Type != config.SourceWebhook {
+		http.Error(w, "channel "+info.Name+" is a "+info.Type+" channel, not webhook", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if info.Token != "" {
+		if !tokenMatches(r, info.Token) {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="tuner"`)
+			http.Error(w, "ingest refused: a bearer token is required for this channel", http.StatusUnauthorized)
+			return
+		}
+	} else if !isLoopbackPeer(r) {
+		http.Error(w, "ingest refused: channel "+info.Name+
+			" has no auth token and accepts pushes from loopback only", http.StatusForbidden)
+		return
+	}
+
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, custom.MaxBody))
+	if err != nil {
+		http.Error(w, "read body: "+err.Error(), http.StatusRequestEntityTooLarge)
+		return
+	}
+
+	snap, err := s.custom.Ingest(info.Name, body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, snap)
+}
+
+// tokenMatches compares the request's bearer token with the configured one in
+// constant time, so the comparison leaks nothing about the secret.
+func tokenMatches(r *http.Request, token string) bool {
+	got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(strings.TrimSpace(got)), []byte(token)) == 1
+}
+
+// isLoopbackPeer reports whether the request was made from this machine. The
+// remote address is the peer of this connection, not a forwarding header, so a
+// client cannot claim loopback.
+func isLoopbackPeer(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 // HandleLLMSTxt generates llms.txt on demand using Gherkin features.
 func (s *Server) HandleLLMSTxt(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
@@ -244,9 +429,15 @@ func (s *Server) HandleLLMSTxt(w http.ResponseWriter, _ *http.Request) {
 		})
 	}
 	for _, c := range s.cfg.Channels.Custom {
+		description := fmt.Sprintf("custom %s channel", c.Source.Type)
+		if err := s.custom.ConfigError(c.Name); err != nil {
+			// Advertised, so say what it cannot do rather than describing it as
+			// a channel an agent can consume.
+			description = fmt.Sprintf("custom %s channel (misconfigured: %v)", c.Source.Type, err)
+		}
 		channels = append(channels, llms.ChannelInfo{
 			Name:        c.Name,
-			Description: fmt.Sprintf("custom %s channel", c.Source.Type),
+			Description: description,
 		})
 	}
 
