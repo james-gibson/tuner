@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -93,6 +94,51 @@ func statusServer(t *testing.T, body string) *httptest.Server {
 	}))
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// TestCmdChannelNeedsNoConfigFile guards tuner#16: cmdChannel was the only
+// subcommand that defaulted --config to a file in the cwd, so the documented
+// `tuner channel <name>` step failed on a machine with no tuner.config.yaml.
+// Built-in defaults set tv.auto_launch, so the preset is written to the default
+// cable dir — which is why HOME is redirected into the test's temp dir.
+func TestCmdChannelNeedsNoConfigFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Chdir(t.TempDir()) // deliberately no tuner.config.yaml here
+
+	out := captureStdout(t, func() {
+		cmdChannel([]string{"dns"})
+	})
+
+	want := filepath.Join(home, ".config", "tuner", "cable", "ocd-dns.toml")
+	if _, err := os.Stat(want); err != nil {
+		t.Fatalf("preset not written to the default cable dir: %v\noutput:\n%s", err, out)
+	}
+	if !strings.Contains(out, "wrote channel:") {
+		t.Fatalf("expected the written path on stdout, got:\n%s", out)
+	}
+}
+
+// TestCmdChannelPrintsPresetWithoutAutoLaunch covers the preview path with no
+// config file: a config that disables auto_launch must still resolve the preset
+// and print its TOML rather than erroring.
+func TestCmdChannelPrintsPresetWithoutAutoLaunch(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	cfgPath := filepath.Join(dir, "no-launch.yaml")
+	if err := os.WriteFile(cfgPath, []byte("tv:\n  auto_launch: false\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdChannel([]string{"dns", "--config=" + cfgPath})
+	})
+
+	if !strings.Contains(out, `name = "dns"`) || !strings.Contains(out, "[source]") {
+		t.Fatalf("expected the dns preset TOML, got:\n%s", out)
+	}
 }
 
 // TestCmdSignalsRendersTargets is the regression tuner#23 reported: pointing
