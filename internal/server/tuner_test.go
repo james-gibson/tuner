@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -14,6 +16,7 @@ import (
 	"github.com/james-gibson/tuner/internal/channelsource"
 	"github.com/james-gibson/tuner/internal/config"
 	"github.com/james-gibson/tuner/internal/mdns"
+	"github.com/james-gibson/tuner/internal/notes"
 )
 
 func newTestServer() *Server {
@@ -667,4 +670,59 @@ func TestLLMSTxtMarksMisconfiguredCustom(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "misconfigured") {
 		t.Fatalf("llms.txt advertises an unservable channel as if it could answer:\n%s", w.Body)
 	}
+}
+
+func TestNotesChannelItems(t *testing.T) {
+	dir := t.TempDir()
+	feedPath := filepath.Join(dir, "feed.json")
+	body := `{"title":"prep","items":[{"id":"n-1","title":"is it frontmatter?","kind":"question"}]}`
+	if err := os.WriteFile(feedPath, []byte(body), 0o600); err != nil {
+		t.Fatalf("write feed: %v", err)
+	}
+
+	cfg := config.Defaults()
+	cfg.Channels.Notes = []config.NotesChannel{{Name: "prep", Source: feedPath, Refresh: "30s"}}
+	srv := New(Options{Config: cfg, Version: "test"})
+
+	req := httptest.NewRequest("GET", "/channels/prep", http.NoBody)
+	w := httptest.NewRecorder()
+	srv.HandleChannel(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp struct {
+		Channel string       `json:"channel"`
+		Type    string       `json:"type"`
+		Items   []notes.Item `json:"items"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	if resp.Type != "notes" || len(resp.Items) != 1 || resp.Items[0].ID != "n-1" {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+}
+
+func TestNotesChannelListed(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Channels.Notes = []config.NotesChannel{{Name: "prep", Source: "x"}}
+	srv := New(Options{Config: cfg, Version: "test"})
+
+	req := httptest.NewRequest("GET", "/channels", http.NoBody)
+	w := httptest.NewRecorder()
+	srv.HandleListChannels(w, req)
+
+	var resp struct {
+		Channels []map[string]any `json:"channels"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	for _, c := range resp.Channels {
+		if c["name"] == "prep" && c["type"] == "notes" {
+			return
+		}
+	}
+	t.Fatalf("notes channel not listed: %+v", resp.Channels)
 }

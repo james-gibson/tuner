@@ -43,6 +43,14 @@ channels:
       targets:
         - 8.8.8.8
       interval: 2s
+  # notes: RSS-shaped feeds of prep questions, surfaced on the broadcast.
+  # Content is authored elsewhere (kb/scripts/lab/search/notes.py export);
+  # tuner only presents the newest items. Deliberately not advertised in llms.txt.
+  # notes:
+  #   - name: prep
+  #     source: "~/.local/share/kb-lab/notes.feed.xml"
+  #     refresh: "30s"
+  #
   # custom:
   #   # Custom channels are served from their own source, so a declaration
   #   # needs one. Nothing is declared by default; the four shapes are:
