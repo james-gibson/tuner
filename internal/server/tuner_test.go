@@ -101,8 +101,8 @@ func TestHandleStatus(t *testing.T) {
 		t.Fatalf("expected version test, got %v", resp["version"])
 	}
 	channels, ok := resp["channels"].(float64)
-	if !ok || channels != 3 {
-		t.Fatalf("expected 3 channels, got %v", resp["channels"])
+	if !ok || channels != 4 {
+		t.Fatalf("expected 4 channels (3 presets + the browser), got %v", resp["channels"])
 	}
 }
 
@@ -121,8 +121,9 @@ func TestHandleListChannels(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected channels array, got %T", resp["channels"])
 	}
-	if len(channels) != 3 {
-		t.Fatalf("expected 3 channels, got %d", len(channels))
+	// 3 presets + the generated certification browser channel.
+	if len(channels) != 4 {
+		t.Fatalf("expected 4 channels, got %d", len(channels))
 	}
 }
 
@@ -138,8 +139,8 @@ func TestHandleListChannelsIncludesDiscovered(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("json: %v", err)
 	}
-	if len(resp.Channels) != 4 {
-		t.Fatalf("expected 3 presets + 1 discovered channel, got %d", len(resp.Channels))
+	if len(resp.Channels) != 5 {
+		t.Fatalf("expected 3 presets + 1 browser + 1 discovered channel, got %d", len(resp.Channels))
 	}
 
 	last := resp.Channels[len(resp.Channels)-1]
@@ -164,8 +165,8 @@ func TestHandleStatusCountsDiscovered(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("json: %v", err)
 	}
-	if channels, ok := resp["channels"].(float64); !ok || channels != 4 {
-		t.Fatalf("expected 4 channels (3 presets + 1 discovered), got %v", resp["channels"])
+	if channels, ok := resp["channels"].(float64); !ok || channels != 5 {
+		t.Fatalf("expected 5 channels (3 presets + 1 browser + 1 discovered), got %v", resp["channels"])
 	}
 }
 

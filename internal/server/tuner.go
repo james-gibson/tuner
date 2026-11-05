@@ -18,7 +18,9 @@ import (
 	"github.com/james-gibson/tuner/internal/channelsource"
 	"github.com/james-gibson/tuner/internal/config"
 	"github.com/james-gibson/tuner/internal/custom"
+	"github.com/james-gibson/tuner/internal/featurebrowser"
 	"github.com/james-gibson/tuner/internal/llms"
+	"github.com/james-gibson/tuner/internal/mdns"
 	"github.com/james-gibson/tuner/internal/notes"
 )
 
@@ -40,6 +42,16 @@ type Server struct {
 	audience map[string]AudienceMetric
 
 	notes *notes.Store
+
+	// isotopes returns the currently advertised adhd endpoints; nil when the
+	// process has no browse loop (receive mode, tests).
+	isotopes func() []mdns.Endpoint
+
+	// features is the adhd certification browser behind the adhd-features
+	// channel (tuner#37). It is always present: with no discovered instance
+	// and no configured endpoint it answers "no sources" rather than 404, so a
+	// listed channel always answers (tuner#30).
+	features *featurebrowser.Browser
 }
 
 // AudienceMetric holds broadcaster-reported audience data.
@@ -57,20 +69,37 @@ type Options struct {
 	// Channels is the live registry of discovered channel sources. Optional:
 	// without it the server only knows the configured channels.
 	Channels *channelsource.Registry
+	// Isotopes returns the isotope endpoints currently advertised on the
+	// network — the adhd instances the certification browser calls. It is a
+	// function because discovery keeps running after the server starts. The
+	// channel registry cannot supply this set: it holds only _smoke-alarm._tcp
+	// records, because only those back a /status document.
+	Isotopes func() []mdns.Endpoint
 	Version  string
 }
 
 // New creates a new Server.
 func New(opts Options) *Server {
-	return &Server{
+	s := &Server{
 		cfg:      opts.Config,
 		version:  opts.Version,
 		startAt:  time.Now(),
 		sources:  opts.Channels,
+		isotopes: opts.Isotopes,
 		custom:   custom.New(opts.Config.Channels.Custom),
 		audience: make(map[string]AudienceMetric),
 		notes:    notes.NewStore(30 * time.Second),
 	}
+	// The browser reads the live source set on every fetch, so an adhd
+	// instance discovered after the server started is browsable without a
+	// restart — the same rule continuous discovery applies to channels.
+	s.features = featurebrowser.New(featurebrowser.Options{
+		Version:  opts.Version,
+		Refresh:  opts.Config.FeatureRefreshDuration(),
+		Identity: opts.Config.FeatureIdentity,
+		Sources:  s.featureSources,
+	})
+	return s
 }
 
 // HandleHealthz returns 200 if alive.
@@ -97,14 +126,19 @@ func (s *Server) HandleStatus(w http.ResponseWriter, _ *http.Request) {
 
 	presetCount := len(s.cfg.Channels.Preset)
 	customCount := len(s.cfg.Channels.Custom)
+	notesCount := len(s.cfg.Channels.Notes)
 	discoveredCount := len(s.discoveredSources())
+	// +1 for the generated certification browser: it is always listed by
+	// HandleListChannels, so the count has to include it or /status disagrees
+	// with /channels (tuner#37).
+	browserCount := 1
 
 	writeJSON(w, map[string]any{
 		"service":  "tuner",
 		"version":  s.version,
 		"mode":     s.cfg.Mode,
 		"uptime":   time.Since(s.startAt).String(),
-		"channels": presetCount + customCount + discoveredCount,
+		"channels": presetCount + customCount + notesCount + browserCount + discoveredCount,
 		"audience": audienceCount,
 	})
 }
@@ -142,6 +176,14 @@ func (s *Server) HandleListChannels(w http.ResponseWriter, _ *http.Request) {
 			"source": n.Source,
 		})
 	}
+	// The certification browser is a channel like any other: it is listed here
+	// and answers on GET /channels/adhd-features, including the honest
+	// "no sources" answer (tuner#37).
+	channels = append(channels, map[string]any{
+		"name":   featurebrowser.ChannelName,
+		"type":   "adhd-features",
+		"source": "adhd-mcp",
+	})
 	for _, src := range s.discoveredSources() {
 		channels = append(channels, map[string]any{
 			"name":       src.Instance,
@@ -157,6 +199,20 @@ func (s *Server) HandleListChannels(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) HandleChannel(w http.ResponseWriter, r *http.Request) {
 	// /channels/{name}[/{action}]
 	name, action := splitChannelPath(r.URL.Path)
+
+	// The adhd-features channel is generated from the browser's merged view
+	// rather than stored: it owns its default and sse routes, and every other
+	// action falls through to the shared ones (status, caller, audience).
+	if name == featurebrowser.ChannelName {
+		switch action {
+		case "":
+			writeJSON(w, featureViewResponse(name, s.features.View(r.Context())))
+			return
+		case "sse":
+			s.handleFeatureSSE(w, r)
+			return
+		}
+	}
 
 	// A notes channel owns its own default and "sse" routes: the generic
 	// handlers below only know presets.
@@ -294,6 +350,116 @@ func (s *Server) discoveredSources() []channelsource.Source {
 		return nil
 	}
 	return s.sources.List()
+}
+
+// featureSources is the browser's source set: the adhd instances the mDNS
+// browser has discovered, with the configured endpoints as the fallback for
+// when mDNS is unavailable. Discovery wins when it found something — the rule
+// the feature file pins for "falls back to configured ADHD endpoint".
+//
+// The channel registry is deliberately not consulted: it keeps only
+// _smoke-alarm._tcp records, and an adhd instance advertises
+// _adhd-isotope._tcp, which backs no /status and is not a channel source.
+func (s *Server) featureSources() []featurebrowser.Source {
+	var discovered []featurebrowser.Source
+	if s.isotopes != nil {
+		discovered = featurebrowser.DiscoveredSources(s.isotopes())
+	}
+	configured := featurebrowser.ConfigSources(s.cfg.FeatureBrowser.Endpoints)
+	return featurebrowser.SourceSet(discovered, configured)
+}
+
+// featureChannelResponse is the adhd-features channel body: the channel's own
+// identity plus the merged view at the top level, so a consumer reads
+// view.status without unwrapping a second envelope.
+type featureChannelResponse struct {
+	Channel string `json:"channel"`
+	Type    string `json:"type"`
+	featurebrowser.View
+}
+
+func featureViewResponse(name string, view featurebrowser.View) featureChannelResponse {
+	return featureChannelResponse{Channel: name, Type: "adhd-features", View: view}
+}
+
+// handleFeatureSSE streams the merged certification view: the current view
+// once, then a view event whenever the merged state changes.
+//
+// The stream is poll-based, not push. adhd does not publish coverage updates —
+// its certification tools are declared absent (adhd#24 closed @red, adhd#39
+// open) — so tuner re-reads within the refresh window and announces a change
+// only when the merged view actually differs, which is what "refreshes
+// automatically when new certifications arrive" can honestly mean here.
+func (s *Server) handleFeatureSSE(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "SSE not supported", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	last := ""
+	emitIfChanged := func(view featurebrowser.View) {
+		key := featureViewKey(view)
+		if key == last {
+			return
+		}
+		last = key
+		payload, err := json.Marshal(featureViewResponse(featurebrowser.ChannelName, view))
+		if err != nil {
+			return
+		}
+		_, _ = fmt.Fprintf(w, "event: view\ndata: %s\n\n", payload) //nolint:gosec // G705: payload is json.Marshal output, served as text/event-stream
+		flusher.Flush()
+	}
+
+	emitIfChanged(s.features.View(r.Context()))
+
+	ticker := time.NewTicker(s.featurePollInterval())
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			emitIfChanged(s.features.View(r.Context()))
+		case <-r.Context().Done():
+			return
+		}
+	}
+}
+
+// featureViewKey is the change-detection key: the view without the fetch
+// timestamps — the view's own and each source's — so a poll that returns the
+// same state is not re-announced. Everything else in the view is adhd's
+// answer, and a change in any of it is worth an event.
+func featureViewKey(view featurebrowser.View) string {
+	view.Fetched = time.Time{}
+	// The sources slice is shared with the browser's cache, so copying it
+	// before clearing the per-source timestamps keeps the key from mutating a
+	// view another request is reading.
+	sources := make([]featurebrowser.Source, len(view.Sources))
+	copy(sources, view.Sources)
+	for i := range sources {
+		sources[i].Fetched = time.Time{}
+	}
+	view.Sources = sources
+	payload, err := json.Marshal(view)
+	if err != nil {
+		return ""
+	}
+	return string(payload)
+}
+
+// featurePollInterval bounds how often the stream re-reads the browser. The
+// browser's own cache shortens the effective rate; the floor keeps a
+// misconfigured sub-second refresh from spinning.
+func (s *Server) featurePollInterval() time.Duration {
+	interval := s.cfg.FeatureRefreshDuration()
+	if interval < 2*time.Second {
+		return 2 * time.Second
+	}
+	return interval
 }
 
 func (s *Server) notesSource(name string) (string, bool) {
@@ -532,6 +698,12 @@ func (s *Server) HandleLLMSTxt(w http.ResponseWriter, _ *http.Request) {
 			Description: description,
 		})
 	}
+	// The certification browser is generated from the adhd sources, so it is
+	// advertised like a preset channel rather than a per-instance one.
+	channels = append(channels, llms.ChannelInfo{
+		Name:        featurebrowser.ChannelName,
+		Description: "adhd feature and skill certification, merged over the discovered instances",
+	})
 
 	info := llms.RuntimeInfo{
 		Mode:          s.cfg.Mode,
@@ -542,6 +714,7 @@ func (s *Server) HandleLLMSTxt(w http.ResponseWriter, _ *http.Request) {
 			"Real-time alert signal with 30-minute decay",
 			"Channel visualization via Television",
 			"Interactive caller line",
+			"Feature/skill certification browsing over adhd's MCP endpoint",
 		},
 		Channels: channels,
 	}
