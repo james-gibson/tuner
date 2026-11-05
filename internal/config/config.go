@@ -26,17 +26,18 @@ const (
 
 // Config is the root configuration.
 type Config struct {
-	Version   string          `yaml:"version"`
-	Mode      string          `yaml:"mode"` // broadcast | receive
-	Health    HealthConfig    `yaml:"health"`
-	Broadcast BroadcastConfig `yaml:"broadcast"`
-	Receive   ReceiveConfig   `yaml:"receive"`
-	MDNS      MDNSConfig      `yaml:"mdns"`
-	Channels  ChannelsConfig  `yaml:"channels"`
-	Signal    SignalConfig    `yaml:"signal"`
-	TV        TVConfig        `yaml:"tv"`
-	Logging   LoggingConfig   `yaml:"logging"`
-	Extra     map[string]any  `yaml:",inline"`
+	Version        string               `yaml:"version"`
+	Mode           string               `yaml:"mode"` // broadcast | receive
+	Health         HealthConfig         `yaml:"health"`
+	Broadcast      BroadcastConfig      `yaml:"broadcast"`
+	Receive        ReceiveConfig        `yaml:"receive"`
+	MDNS           MDNSConfig           `yaml:"mdns"`
+	Channels       ChannelsConfig       `yaml:"channels"`
+	FeatureBrowser FeatureBrowserConfig `yaml:"feature_browser"`
+	Signal         SignalConfig         `yaml:"signal"`
+	TV             TVConfig             `yaml:"tv"`
+	Logging        LoggingConfig        `yaml:"logging"`
+	Extra          map[string]any       `yaml:",inline"`
 }
 
 // HealthConfig configures the local health/status HTTP server.
@@ -156,6 +157,28 @@ type AuthConfig struct {
 type ThemeConfig struct {
 	Color string `yaml:"color"`
 	Icon  string `yaml:"icon,omitempty"`
+}
+
+// FeatureBrowserConfig configures the adhd certification browser (tuner#37):
+// the merged feature + skill certification view published as the adhd-features
+// channel. Discovery over mDNS is the primary source set; endpoints are the
+// fallback for when mDNS is unavailable (features/tuner-feature-browser.feature).
+type FeatureBrowserConfig struct {
+	// Endpoints are direct adhd MCP endpoints, e.g. http://127.0.0.1:9090/mcp.
+	// A bare origin gets the conventional /mcp path.
+	Endpoints []FeatureEndpoint `yaml:"endpoints"`
+	// Refresh is the merged-view cache lifetime, e.g. "30s".
+	Refresh string `yaml:"refresh"`
+	// Identity pins the tuner instance id sent with each MCP handshake, for
+	// an operator whose adhd registry knows this tuner under a specific id.
+	// Never a rung — adhd assigns rungs; tuner only names itself.
+	Identity string `yaml:"identity"`
+}
+
+// FeatureEndpoint is one configured adhd MCP endpoint.
+type FeatureEndpoint struct {
+	Name string `yaml:"name"`
+	URL  string `yaml:"url"`
 }
 
 // SignalConfig configures alert signal strength and decay.
