@@ -6,10 +6,10 @@ import (
 )
 
 func TestBuiltinPresetsCount(t *testing.T) {
-	// mdns, ntp, dns, ping, signal, federation
+	// mdns, ntp, dns, ping, adhd-features, signal, federation
 	presets := BuiltinPresets()
-	if len(presets) != 6 {
-		t.Fatalf("expected 6 presets, got %d", len(presets))
+	if len(presets) != 7 {
+		t.Fatalf("expected 7 presets, got %d", len(presets))
 	}
 }
 
@@ -35,7 +35,7 @@ func TestBuiltinPresetsHaveRequiredFields(t *testing.T) {
 
 func TestBuiltinPresetsContainExpected(t *testing.T) {
 	presets := BuiltinPresets()
-	for _, expected := range []string{"ntp", "dns", "ping", "signal", "federation"} {
+	for _, expected := range []string{"ntp", "dns", "ping", "adhd-features", "signal", "federation"} {
 		if _, ok := presets[expected]; !ok {
 			t.Fatalf("missing expected preset %q", expected)
 		}

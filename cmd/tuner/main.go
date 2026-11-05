@@ -19,6 +19,7 @@ import (
 	"github.com/james-gibson/tuner/internal/channelsource"
 	"github.com/james-gibson/tuner/internal/config"
 	"github.com/james-gibson/tuner/internal/custom"
+	"github.com/james-gibson/tuner/internal/featurebrowser"
 	"github.com/james-gibson/tuner/internal/lezzdemo"
 	"github.com/james-gibson/tuner/internal/mdns"
 	"github.com/james-gibson/tuner/internal/server"
@@ -102,6 +103,8 @@ func main() {
 		cmdList(args[1:])
 	case "signals":
 		cmdSignals(args[1:])
+	case "features":
+		cmdFeatures(args[1:])
 	case "mdns":
 		cmdMdns(args[1:])
 	case "tv":
@@ -128,6 +131,7 @@ Commands:
   discover    Discover smoke-alarm services via mDNS
   list        List available channels
   signals     Monitor alert signal strength
+  features    Browse adhd feature/skill certification (the adhd-features channel)
   mdns        Real-time mDNS service monitor (for TV channel)
   tv          Manage tuner's isolated TV channels (list, launch, sync)
   validate    Validate configuration
@@ -136,7 +140,11 @@ Commands:
 Flags:
   --config=<path>     Path to config file (optional; built-in defaults used if omitted)
   --mode=<mode>       broadcast or receive (overrides config)
-  --endpoint=<url>    smoke-alarm endpoint URL (signals command only)`)
+  --endpoint=<url>    smoke-alarm endpoint URL (signals), or the adhd MCP endpoint
+                      to read instead of discovering one (features)
+  --verify=<feature>  features only: ask adhd to re-probe a certified feature
+                      (rung 3; refused below it)
+  --json              features only: emit the merged view as JSON`)
 }
 
 func cmdServe(args []string) {
@@ -165,6 +173,11 @@ func cmdServe(args []string) {
 		for _, notice := range custom.ExposureProblems(cfg.Channels.Custom, cfg.Broadcast.Listen) {
 			log.Printf("⚠️  %s", notice) //nolint:gosec // G706: the notice is built from the operator's own config, not request input
 		}
+		// A malformed fallback endpoint is reported once, at startup, rather
+		// than only when the channel is asked for a view.
+		for _, problem := range featurebrowser.ValidateConfig(cfg.FeatureBrowser) {
+			log.Printf("feature browser config: %v", problem)
+		}
 	}
 
 	ctx, cancel := ossignal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -176,10 +189,45 @@ func cmdServe(args []string) {
 	// post-startup instance only produced a log line (tuner#20).
 	sources := channelsource.NewRegistry()
 
+	// The peer browser also holds the _adhd-isotope._tcp records, which the
+	// registry ignores — an isotope record backs no /status and so is not a
+	// channel source. The certification browser needs them, so the browse loop
+	// is created before the server: its records are read through this closure
+	// from request handlers, and creating it first keeps that read from racing
+	// a later assignment.
+	var peerBrowser *mdns.Browser
+	if cfg.Mode == config.ModeBroadcast {
+		peerBrowser = mdns.NewBrowser(mdns.BrowserOptions{
+			ServiceTypes: cfg.MDNS.BrowseTypes(),
+			Domains:      cfg.MDNS.Domains,
+			Interval:     cfg.RefreshDuration(),
+			OnChange: func(svc mdns.Service) {
+				if _, ok := sources.Observe(svc); ok {
+					return // reported by the registry subscriber
+				}
+				log.Printf("peer discovered: %s %q at %s (txt: %v)",
+					svc.ServiceType, svc.Name, svc.Endpoint(), svc.TXT)
+			},
+			OnRemove: func(svc mdns.Service) {
+				if _, ok := sources.Retire(svc); ok {
+					return // reported by the registry subscriber
+				}
+				// A smoke-alarm retirement that did not remove a source is the
+				// stale record of an instance that rebound its health port.
+				// The live source stays; there is nothing to report.
+				if svc.ServiceType == mdns.SmokeAlarmServiceType {
+					return
+				}
+				log.Printf("peer departed: %s %q at %s", svc.ServiceType, svc.Name, svc.Endpoint())
+			},
+		})
+	}
+
 	srv := server.New(server.Options{
 		Config:   cfg,
 		Version:  version(),
 		Channels: sources,
+		Isotopes: func() []mdns.Endpoint { return isotopeEndpoints(cfg, peerBrowser) },
 	})
 
 	// Report every source transition once. The subscriber is attached before
@@ -253,30 +301,6 @@ func cmdServe(args []string) {
 
 		// Peers are discovered while we serve, not before. The browse loop is
 		// continuous, so an instance that starts later still turns up.
-		peerBrowser := mdns.NewBrowser(mdns.BrowserOptions{
-			ServiceTypes: cfg.MDNS.BrowseTypes(),
-			Domains:      cfg.MDNS.Domains,
-			Interval:     cfg.RefreshDuration(),
-			OnChange: func(svc mdns.Service) {
-				if _, ok := sources.Observe(svc); ok {
-					return // reported by the registry subscriber
-				}
-				log.Printf("peer discovered: %s %q at %s (txt: %v)",
-					svc.ServiceType, svc.Name, svc.Endpoint(), svc.TXT)
-			},
-			OnRemove: func(svc mdns.Service) {
-				if _, ok := sources.Retire(svc); ok {
-					return // reported by the registry subscriber
-				}
-				// A smoke-alarm retirement that did not remove a source is the
-				// stale record of an instance that rebound its health port.
-				// The live source stays; there is nothing to report.
-				if svc.ServiceType == mdns.SmokeAlarmServiceType {
-					return
-				}
-				log.Printf("peer departed: %s %q at %s", svc.ServiceType, svc.Name, svc.Endpoint())
-			},
-		})
 		go peerBrowser.Start(ctx)
 
 		if injected := lezzdemo.Seed(peerBrowser); len(injected) > 0 {
@@ -472,6 +496,136 @@ func cmdList(_ []string) {
 		}
 		fmt.Printf("  [custom] %s (%s)\n", c.Name, c.Source.Type)
 	}
+	// The certification browser is always available: with no source it answers
+	// "no sources" rather than being absent from the list.
+	fmt.Printf("  [browser] %s (adhd mcp)\n", featurebrowser.ChannelName)
+}
+
+// cmdFeatures renders the merged adhd certification view — the data behind the
+// adhd-features Television channel — or triggers a rung-3 verification of one
+// feature (tuner#37).
+//
+// The command is the channel's source: `tuner features` prints the rendered
+// view, so the TV preset is one line and the operator's inline view is the same
+// bytes.
+func cmdFeatures(args []string) {
+	configPath := flagValue(args, "config", "")
+	endpoint := flagValue(args, "endpoint", "")
+	verify := flagValue(args, "verify", "")
+	jsonOut := flagPresent(args, "json")
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		fatal("load config: %v", err)
+	}
+	// A malformed fallback endpoint is worth saying out loud, but it is not
+	// fatal: mDNS may still find an instance, and the channel has to answer.
+	for _, problem := range featurebrowser.ValidateConfig(cfg.FeatureBrowser) {
+		fmt.Fprintf(os.Stderr, "warning: %v\n", problem)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	browser := featurebrowser.New(featurebrowser.Options{
+		Version:  version(),
+		Refresh:  cfg.FeatureRefreshDuration(),
+		Identity: cfg.FeatureIdentity,
+		Sources: func() []featurebrowser.Source {
+			return featureSources(ctx, cfg, endpoint)
+		},
+	})
+
+	if verify != "" {
+		result, err := browser.Verify(ctx, verify)
+		if err != nil {
+			fatal("%v", err)
+		}
+		if jsonOut {
+			if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+				fatal("encode verify result: %v", err)
+			}
+			return
+		}
+		for _, line := range featurebrowser.RenderVerify(result) {
+			fmt.Println(line)
+		}
+		return
+	}
+
+	view := browser.View(ctx)
+	if jsonOut {
+		if err := json.NewEncoder(os.Stdout).Encode(view); err != nil {
+			fatal("encode view: %v", err)
+		}
+		return
+	}
+	for _, line := range featurebrowser.Render(view) {
+		fmt.Println(line)
+	}
+}
+
+// featureSources resolves the browser's source set for one CLI run. An
+// explicit --endpoint wins — the operator named the instance, so no browse and
+// no config fallback — otherwise discovery is primary and the configured
+// endpoints are the fallback.
+func featureSources(ctx context.Context, cfg *config.Config, endpoint string) []featurebrowser.Source {
+	if strings.TrimSpace(endpoint) != "" {
+		// An explicitly named endpoint is its own source set: no browse, no
+		// config fallback. ConfigSources labels it by host:port, which is the
+		// address the operator typed.
+		sources := featurebrowser.ConfigSources([]config.FeatureEndpoint{{URL: endpoint}})
+		for i := range sources {
+			sources[i].Origin = "flag"
+		}
+		return sources
+	}
+	discovered := featurebrowser.DiscoveredSources(browseIsotopes(ctx, cfg))
+	configured := featurebrowser.ConfigSources(cfg.FeatureBrowser.Endpoints)
+	return featurebrowser.SourceSet(discovered, configured)
+}
+
+// isotopeEndpoints is the adhd discovery set: every endpoint the browse loop
+// has seen under the registered isotope types. A nil browser is an empty set,
+// not an error — the configured fallback covers it.
+func isotopeEndpoints(cfg *config.Config, browser *mdns.Browser) []mdns.Endpoint {
+	if browser == nil {
+		return nil
+	}
+	var out []mdns.Endpoint
+	for _, serviceType := range cfg.MDNS.IsotopeTypes {
+		out = append(out, browser.EndpointsByType(serviceType)...)
+	}
+	return out
+}
+
+// browseIsotopes runs one bounded browse for the registered isotope types. The
+// server browses continuously; a one-shot command cannot, so it waits out a
+// short window and takes whatever announced inside it. Missing instances are
+// not an error here — the configured fallback and the "no sources" view cover
+// that, and both are answers rather than failures.
+func browseIsotopes(ctx context.Context, cfg *config.Config) []mdns.Endpoint {
+	types := cfg.MDNS.IsotopeTypes
+	if len(types) == 0 {
+		return nil
+	}
+	browseCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	browser := mdns.NewBrowser(mdns.BrowserOptions{
+		ServiceTypes: types,
+		Domains:      cfg.MDNS.Domains,
+		Interval:     5 * time.Second,
+		Quiet:        true,
+	})
+	go browser.Start(browseCtx)
+	<-browseCtx.Done()
+
+	var out []mdns.Endpoint
+	for _, serviceType := range types {
+		out = append(out, browser.EndpointsByType(serviceType)...)
+	}
+	return out
 }
 
 func cmdSignals(args []string) {
@@ -822,6 +976,12 @@ func cmdValidate(args []string) {
 			fmt.Fprintf(os.Stderr, "error: %v\n", problem)
 		}
 		fatal("%d invalid custom channel(s)", len(problems))
+	}
+	if problems := featurebrowser.ValidateConfig(cfg.FeatureBrowser); len(problems) > 0 {
+		for _, problem := range problems {
+			fmt.Fprintf(os.Stderr, "error: %v\n", problem)
+		}
+		fatal("%d invalid feature_browser entr(ies)", len(problems))
 	}
 	fmt.Printf("config OK: version=%s mode=%s channels=%d\n",
 		cfg.Version, cfg.Mode,

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/james-gibson/tuner/internal/featurebrowser"
 )
 
 // TestServiceTypesKeepsStdoutClean guards tuner#22: cmdMdns parses stdout as
@@ -188,5 +191,108 @@ func TestCmdSignalsJSONIsAlertArray(t *testing.T) {
 	}
 	if alerts[0].Source != "peer-c" || alerts[0].Severity != "critical" || alerts[0].TriggeredAt == "" {
 		t.Fatalf("unexpected alert: %+v", alerts[0])
+	}
+}
+
+// fakeADHDEndpoint serves the MCP methods `tuner features` calls. The lab's
+// certification tools are declared absent, so a served contract exists only as
+// a fixture.
+func fakeADHDEndpoint(t *testing.T) *httptest.Server {
+	t.Helper()
+
+	results := map[string]string{
+		"adhd.features.certified": `{"caller_rung":3,"features":[
+			{"feature_file":"adhd/mdns-discovery","certified":true,"cluster_member":"smoke:alarm-a/t1"},
+			{"feature_file":"adhd/headless-mode","certified":false}]}`,
+		"adhd.skills.certified": `{"skills":[{"skill_name":"open-the-pickle-jar","certified_rung":3}]}`,
+		"adhd.features.verify":  `{"still_certified":false,"note":"isotope rotated","current_isotope_id":"iso-2"}`,
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     int64  `json:"id"`
+			Method string `json:"method"`
+			Params struct {
+				Name string `json:"name"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch req.Method {
+		case "initialize":
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"protocolVersion":"2024-11-05","serverInfo":{"name":"adhd"}}}`, req.ID)
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/list":
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"tools":[
+				{"name":"adhd.features.certified"},
+				{"name":"adhd.skills.certified"},
+				{"name":"adhd.features.verify"}]}}`, req.ID)
+		case "tools/call":
+			raw, ok := results[req.Params.Name]
+			if !ok {
+				_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"error":{"code":-32601,"message":"method not found"}}`, req.ID)
+				return
+			}
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":%s}`, req.ID, raw)
+		default:
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"error":{"code":-32601,"message":"method not found"}}`, req.ID)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestCmdFeaturesRendersMergedView(t *testing.T) {
+	adhd := fakeADHDEndpoint(t)
+
+	out := captureStdout(t, func() {
+		cmdFeatures([]string{"--endpoint=" + adhd.URL})
+	})
+
+	for _, want := range []string{
+		"1 / 2 certified (50%)",
+		"Gherkin Features",
+		"Cluster Skills",
+		"certified by alarm-a/t1",
+		"rung 3 assigned by adhd",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("features output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestCmdFeaturesJSONIsTheMergedView(t *testing.T) {
+	adhd := fakeADHDEndpoint(t)
+
+	out := captureStdout(t, func() {
+		cmdFeatures([]string{"--endpoint=" + adhd.URL, "--json"})
+	})
+
+	var view featurebrowser.View
+	if err := json.Unmarshal([]byte(out), &view); err != nil {
+		t.Fatalf("--json output is not a view: %v\n%s", err, out)
+	}
+	if view.Status != featurebrowser.StatusServed || view.Summary.FeaturesCertified != 1 {
+		t.Fatalf("unexpected view: %+v", view)
+	}
+	if len(view.Skills) != 1 || view.Skills[0].SkillName != "open-the-pickle-jar" {
+		t.Fatalf("skills missing from the JSON view: %+v", view.Skills)
+	}
+}
+
+func TestCmdFeaturesVerifyReportsRotation(t *testing.T) {
+	adhd := fakeADHDEndpoint(t)
+
+	out := captureStdout(t, func() {
+		cmdFeatures([]string{"--endpoint=" + adhd.URL, "--verify=adhd/mdns-discovery"})
+	})
+
+	if !strings.Contains(out, "isotope rotated") || !strings.Contains(out, "iso-2") {
+		t.Fatalf("verify output does not report the rotation:\n%s", out)
 	}
 }

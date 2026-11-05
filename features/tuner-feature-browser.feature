@@ -1,13 +1,32 @@
-# Next-steps record — spec-only: none of this is verified behaviour yet.
-# The discovery half exists (internal/mdns/browser.go browses _adhd-isotope._tcp,
-# internal/channelsource keeps each instance with its role and trust_rung); there
-# is no MCP client, so no call below can be made. Tracked as tuner#37.
+# Next-steps record — implemented and verified against fixtures (tuner#37).
+#
+# internal/mcpclient speaks the streamable-HTTP MCP transport (initialize,
+# tools/list, tools/call, tuner's identity in the handshake, an absent tool
+# reported as declared-but-unserved); internal/featurebrowser browses the
+# discovered _adhd-isotope._tcp instances (internal/mdns/browser.go) with
+# feature_browser.endpoints as the fallback, merges their answers and renders
+# them. `tuner features` and GET /channels/adhd-features[/sse] publish the same
+# view, and the adhd-features Television preset is generated from
+# `tuner features`.
 #
 # adhd side: adhd.features.* and adhd.skills.certified are declared, absent
 # (adhd#24 closed as @red; adhd#39 open; lab-safety sheets/adhd.md §16).
 # Not a delivery date — a surface is not permissible until it is declared, and
 # these are declared absent. "Declared but not served" is an answer tuner has to
 # handle, not a dependency that blocks this file.
+#
+# Two scenarios are implemented as the honest approximation, not literally:
+#   - "ADHD pushes a coverage update via its MCP SSE stream" — adhd serves no
+#     such stream, so /channels/adhd-features/sse re-reads within the refresh
+#     window and emits only when the merged view changes.
+#   - "clicking the link scrolls to or highlights that feature", and the verify
+#     button — the surfaces are text (CLI and Television), so a skill's binding
+#     renders as a label and verification is `tuner features --verify=<feature>`,
+#     offered only at rung 3.
+#
+# Evidence is fixtures, not a live cluster: internal/featurebrowser and
+# internal/server test a fake adhd that serves the declared contract, because
+# adhd declares these tools absent.
 #
 # ADHD advertises its MCP endpoint as _adhd-isotope._tcp (adhd/internal/headless/server.go),
 # not _adhd._tcp.

@@ -37,7 +37,15 @@ Built-in channel types:
 | `ntp` | NTP latency and clock offset |
 | `dns` | DNS resolution timing and stats |
 | `ping` | ICMP round-trip latency |
+| `adhd-features` | adhd feature and skill certification (MCP, merged over instances) |
 | custom | User-defined signal sources |
+
+`adhd-features` is generated rather than configured: tuner discovers adhd over
+mDNS (`_adhd-isotope._tcp`), calls the declared certification tools, and merges
+the answers. With no source it answers "no sources"; when adhd declares the
+tools but does not serve them — the state today — it publishes
+"declared-absent" rather than failing. `tuner features` prints the same view the
+channel serves.
 
 ### Custom channels
 
@@ -105,6 +113,14 @@ curl http://localhost:8090/channels/ntp
 
 # Subscribe to a channel (push via SSE)
 curl -N http://localhost:8090/channels/ntp/stream
+```
+
+The certification view has its own command and channel:
+
+```sh
+./bin/tuner features                 # merged adhd feature + skill view
+./bin/tuner features --json          # the same view as JSON
+./bin/tuner features --verify=adhd/mdns-discovery   # rung 3 only
 ```
 
 ---
@@ -195,6 +211,8 @@ tuner/
 ├── internal/
 │   ├── server/            — HTTP + SSE server
 │   ├── channelsource/     — live channel-source registry (discovered instances)
+│   ├── featurebrowser/    — adhd certification view (discovery, merge, render)
+│   ├── mcpclient/         — MCP client for adhd's JSON-RPC endpoint
 │   ├── signal/            — Signal source implementations
 │   ├── mdns/              — mDNS advertisement
 │   ├── config/            — Config loading
