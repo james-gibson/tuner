@@ -26,6 +26,7 @@ tuner channel <name> [--launch]
 tuner tv list|launch|sync
 tuner discover
 tuner signals [--endpoint=<url>]
+tuner features [--endpoint=<url>] [--verify=<feature>] [--json]
 tuner mdns [--duration=8s]
 tuner validate [--config=<path>]
 tuner version
@@ -42,6 +43,9 @@ internal/
   server/         HTTP handlers: /channels, /channels/<name>, /llms.txt, /healthz
   channelsource/  live channel-source registry written by the mDNS browser
   custom/         channels.custom: command, http, sse and webhook sources, cached
+  notes/          channels.notes: prep-question feeds surfaced as a channel
+  featurebrowser/ the adhd certification view: discovery, merge, rung-gated render
+  mcpclient/      MCP client (JSON-RPC initialize / tools/list / tools/call)
   mdns/           mDNS advertiser and browser (grandcat/zeroconf)
   tv/             Television TOML channel generation, preset library
   signal/         Alert signal strength calculation and bar visualization

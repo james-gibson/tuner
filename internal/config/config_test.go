@@ -73,6 +73,45 @@ signal:
 	}
 }
 
+func TestLoadFeatureBrowser(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "feature.yaml")
+	content := `
+mode: broadcast
+feature_browser:
+  refresh: "10s"
+  identity: "tuner:58093"
+  endpoints:
+    - name: adhd-tui
+      url: "http://127.0.0.1:9090"
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := cfg.FeatureRefreshDuration(); got != 10*time.Second {
+		t.Fatalf("refresh = %v, want 10s", got)
+	}
+	if got := cfg.FeatureIdentity(); got != "tuner:58093" {
+		t.Fatalf("identity = %q, want the configured pin", got)
+	}
+	if len(cfg.FeatureBrowser.Endpoints) != 1 || cfg.FeatureBrowser.Endpoints[0].URL != "http://127.0.0.1:9090" {
+		t.Fatalf("endpoints = %+v", cfg.FeatureBrowser.Endpoints)
+	}
+	// A config file that omits the block keeps the built-in default.
+	defaults, err := Load("")
+	if err != nil {
+		t.Fatalf("load defaults: %v", err)
+	}
+	if got := defaults.FeatureRefreshDuration(); got != 30*time.Second {
+		t.Fatalf("default refresh = %v, want 30s", got)
+	}
+}
+
 func TestLoadEmptyPath(t *testing.T) {
 	cfg, err := Load("")
 	if err != nil {
@@ -115,6 +154,42 @@ func TestRefreshDuration(t *testing.T) {
 	d := cfg.RefreshDuration()
 	if d != 30*time.Second {
 		t.Fatalf("expected 30s, got %v", d)
+	}
+}
+
+func TestFeatureBrowserDefaults(t *testing.T) {
+	cfg := Defaults()
+	if got := cfg.FeatureRefreshDuration(); got != 30*time.Second {
+		t.Fatalf("default feature refresh = %v, want 30s", got)
+	}
+	if got := cfg.FeatureIdentity(); got != "tuner" {
+		t.Fatalf("default feature identity = %q, want tuner", got)
+	}
+	if len(cfg.FeatureBrowser.Endpoints) != 0 {
+		t.Fatalf("defaults carry endpoints: %+v", cfg.FeatureBrowser.Endpoints)
+	}
+}
+
+func TestFeatureRefreshDurationFallsBack(t *testing.T) {
+	for _, refresh := range []string{"", "soon", "0s", "-5s"} {
+		cfg := Defaults()
+		cfg.FeatureBrowser.Refresh = refresh
+		if got := cfg.FeatureRefreshDuration(); got != 30*time.Second {
+			t.Fatalf("refresh %q parsed to %v, want the 30s fallback", refresh, got)
+		}
+	}
+	cfg := Defaults()
+	cfg.FeatureBrowser.Refresh = "5s"
+	if got := cfg.FeatureRefreshDuration(); got != 5*time.Second {
+		t.Fatalf("configured refresh = %v, want 5s", got)
+	}
+}
+
+func TestFeatureIdentityFromConfig(t *testing.T) {
+	cfg := Defaults()
+	cfg.FeatureBrowser.Identity = "tuner:58093"
+	if got := cfg.FeatureIdentity(); got != "tuner:58093" {
+		t.Fatalf("feature identity = %q, want the configured pin", got)
 	}
 }
 

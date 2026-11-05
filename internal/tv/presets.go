@@ -57,6 +57,17 @@ func BuiltinPresets() map[string]Preset {
 			Watch:       10.0,
 			Preview:     `ping -c 1 -W 2 8.8.8.8 2>&1 | tail -3`,
 		},
+		// The certification browser is generated rather than polled: the
+		// channel's source is `tuner features`, so the merged feature + skill
+		// view an operator reads on the CLI is the same view Television shows
+		// (tuner#37). The watch interval matches the browser's 30s cache.
+		"adhd-features": {
+			Name:        "adhd-features",
+			Description: "ADHD Feature & Skill Certification",
+			Command:     "tuner features",
+			Watch:       30.0,
+			Preview:     "tuner features",
+		},
 		"signal":     SignalPreset("http://localhost:17091"),
 		"federation": TopologyPreset("http://localhost:17091"),
 	}
