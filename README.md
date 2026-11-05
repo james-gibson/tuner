@@ -211,12 +211,15 @@ tuner/
 ├── internal/
 │   ├── server/            — HTTP + SSE server
 │   ├── channelsource/     — live channel-source registry (discovered instances)
+│   ├── custom/            — channels.custom: command, http, sse and webhook sources
+│   ├── notes/             — channels.notes: prep-question feeds
 │   ├── featurebrowser/    — adhd certification view (discovery, merge, render)
 │   ├── mcpclient/         — MCP client for adhd's JSON-RPC endpoint
 │   ├── signal/            — Signal source implementations
-│   ├── mdns/              — mDNS advertisement
+│   ├── mdns/              — mDNS advertisement and browsing
 │   ├── config/            — Config loading
-│   ├── caller/            — Outbound HTTP for signal collection
+│   ├── llms/              — llms.txt generator
+│   ├── lezzdemo/          — lezz demo-registry seeding for local runs
 │   └── tv/                — Visualisation layer
 ├── viz/                   — tuner-viz Rust companion binary
 └── features/              — Gherkin acceptance tests
