@@ -27,6 +27,19 @@ mdns:
   txt_record:
     version: "1.0"
 
+# feature_browser: the adhd certification view behind the generated
+# adhd-features channel and `tuner features`. Discovery over mDNS
+# (_adhd-isotope._tcp) is primary; endpoints are the fallback for when mDNS is
+# unavailable. A bare origin gets the conventional /mcp path. identity is
+# tuner's own instance id for the MCP handshake — adhd assigns rungs, so this is
+# an identity, never a rung.
+# feature_browser:
+#   refresh: "30s"
+#   identity: "tuner:8093"
+#   endpoints:
+#     - name: adhd-tui
+#       url: "http://127.0.0.1:9090"
+
 channels:
   preset:
     - name: ntp

@@ -381,12 +381,12 @@ func (b *Browser) fetch(ctx context.Context) View {
 
 	results := make([]sourceResult, len(sources))
 	var wg sync.WaitGroup
-	for i, src := range sources {
+	for i := range sources {
 		wg.Add(1)
-		go func(i int, src Source) {
+		go func(i int) {
 			defer wg.Done()
-			results[i] = b.fetchSource(ctx, src)
-		}(i, src)
+			results[i] = b.fetchSource(ctx, sources[i])
+		}(i)
 	}
 	wg.Wait()
 
@@ -694,7 +694,8 @@ func merge(results []sourceResult, now time.Time) View {
 	certifiedByDemo := map[string]bool{}
 
 	served, declared, unreachable := 0, 0, 0
-	for _, result := range results {
+	for i := range results {
+		result := &results[i]
 		view.Sources = append(view.Sources, result.src)
 		switch result.src.State {
 		case Served:
@@ -907,9 +908,9 @@ func featureTier(f Feature) int {
 
 func orderSources(sources []string, results []sourceResult, certifiedBy func(sourceResult) bool) []string {
 	out := make([]string, 0, len(sources))
-	for _, r := range results {
-		if certifiedBy(r) && contains(sources, r.src.Instance) {
-			out = append(out, r.src.Instance)
+	for i := range results {
+		if certifiedBy(results[i]) && contains(sources, results[i].src.Instance) {
+			out = append(out, results[i].src.Instance)
 		}
 	}
 	for _, s := range sources {
@@ -954,6 +955,39 @@ func NormalizeEndpoint(raw string) string {
 	return u.String()
 }
 
+// ValidateConfig reports feature_browser problems that would leave the channel
+// advertising a source it cannot reach by construction. A malformed endpoint is
+// an error the operator can see at startup; an absent refresh is not — the
+// built-in default applies.
+func ValidateConfig(cfg config.FeatureBrowserConfig) []error {
+	var problems []error
+	for i, ep := range cfg.Endpoints {
+		raw := strings.TrimSpace(ep.URL)
+		if raw == "" {
+			problems = append(problems, fmt.Errorf("feature_browser.endpoints[%d]: empty url", i))
+			continue
+		}
+		u, err := url.Parse(raw)
+		if err != nil {
+			problems = append(problems, fmt.Errorf("feature_browser.endpoints[%d]: %q: %w", i, ep.URL, err))
+			continue
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			problems = append(problems, fmt.Errorf("feature_browser.endpoints[%d]: %q is not an http(s) URL", i, ep.URL))
+			continue
+		}
+		if u.Host == "" {
+			problems = append(problems, fmt.Errorf("feature_browser.endpoints[%d]: %q has no host", i, ep.URL))
+		}
+	}
+	if refresh := strings.TrimSpace(cfg.Refresh); refresh != "" {
+		if d, err := time.ParseDuration(refresh); err != nil || d <= 0 {
+			problems = append(problems, fmt.Errorf("feature_browser.refresh: %q is not a positive duration", cfg.Refresh))
+		}
+	}
+	return problems
+}
+
 // ConfigSources turns feature_browser.endpoints — the fallback for when mDNS
 // is unavailable — into sources.
 func ConfigSources(endpoints []config.FeatureEndpoint) []Source {
@@ -982,7 +1016,8 @@ func ConfigSources(endpoints []config.FeatureEndpoint) []Source {
 // peer; tuner's rung is never in this data.
 func DiscoveredSources(endpoints []mdns.Endpoint) []Source {
 	out := make([]Source, 0, len(endpoints))
-	for _, ep := range endpoints {
+	for i := range endpoints {
+		ep := endpoints[i]
 		src := Source{
 			Instance: ep.Host + ":" + strconv.Itoa(ep.Port),
 			Endpoint: NormalizeEndpoint(ep.URL()),
@@ -1017,12 +1052,12 @@ func SourceSet(discovered, configured []Source) []Source {
 func dedupeByEndpoint(sources []Source) []Source {
 	seen := map[string]bool{}
 	out := make([]Source, 0, len(sources))
-	for _, src := range sources {
-		if seen[src.Endpoint] {
+	for i := range sources {
+		if seen[sources[i].Endpoint] {
 			continue
 		}
-		seen[src.Endpoint] = true
-		out = append(out, src)
+		seen[sources[i].Endpoint] = true
+		out = append(out, sources[i])
 	}
 	return out
 }

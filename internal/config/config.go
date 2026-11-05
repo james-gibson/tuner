@@ -260,6 +260,9 @@ func Defaults() *Config {
 				{Name: "ping"},
 			},
 		},
+		FeatureBrowser: FeatureBrowserConfig{
+			Refresh: "30s",
+		},
 		Signal: SignalConfig{
 			MaxAge:      "30m",
 			DecayLinear: true,
@@ -294,4 +297,26 @@ func (c *Config) RefreshDuration() time.Duration {
 		return 30 * time.Second
 	}
 	return d
+}
+
+// FeatureRefreshDuration parses the feature browser's merged-view cache
+// lifetime. An absent or unparseable value falls back to the built-in 30s, so
+// the channel answers even when the config file omits feature_browser.
+func (c *Config) FeatureRefreshDuration() time.Duration {
+	d, err := time.ParseDuration(c.FeatureBrowser.Refresh)
+	if err != nil || d <= 0 {
+		return 30 * time.Second
+	}
+	return d
+}
+
+// FeatureIdentity returns the instance id tuner presents in the MCP handshake.
+// The handshake carries an identity, never a rung: adhd looks the identity up
+// in its registry and decides what the caller may see. The configured pin
+// exists for an operator whose registry knows this tuner by a specific id.
+func (c *Config) FeatureIdentity() string {
+	if id := c.FeatureBrowser.Identity; id != "" {
+		return id
+	}
+	return "tuner"
 }

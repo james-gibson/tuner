@@ -52,9 +52,8 @@ func Render(v View) []string {
 		// reported — a measurement, not a formula.
 		health += fmt.Sprintf(" · 42i: %d", *v.Summary.Distance42i)
 	}
-	lines = append(lines, health)
-
-	lines = append(lines, fmt.Sprintf("rung %d assigned by adhd · %s", v.Rung, sourceTally(v.Sources)))
+	lines = append(lines, health,
+		fmt.Sprintf("rung %d assigned by adhd · %s", v.Rung, sourceTally(v.Sources)))
 	if v.Demo {
 		lines = append(lines, "demo cluster: plaintext isotopes, not production evidence")
 	}
@@ -90,8 +89,8 @@ func Render(v View) []string {
 	}
 
 	lines = append(lines, "", "Sources")
-	for _, src := range v.Sources {
-		lines = append(lines, renderSource(src))
+	for i := range v.Sources {
+		lines = append(lines, renderSource(v.Sources[i]))
 	}
 	return lines
 }
@@ -109,8 +108,8 @@ func summaryLine(s Summary) string {
 
 func sourceTally(sources []Source) string {
 	counts := map[SourceState]int{}
-	for _, src := range sources {
-		counts[src.State]++
+	for i := range sources {
+		counts[sources[i].State]++
 	}
 	parts := make([]string, 0, len(counts))
 	for _, state := range []SourceState{Served, DeclaredAbsent, Unreachable} {
@@ -123,7 +122,12 @@ func sourceTally(sources []Source) string {
 
 func renderFeature(f Feature) string {
 	marker := "·"
-	if f.Certified {
+	switch {
+	case f.Certified && f.Demo:
+		// A demo certification is drawn hollow as well as labeled: plaintext
+		// isotopes are stand-ins, not production evidence.
+		marker = "◇"
+	case f.Certified:
 		marker = "✔"
 	}
 
@@ -150,7 +154,7 @@ func renderFeature(f Feature) string {
 		b.WriteString("   [stale demo cert]")
 	}
 	if f.Demo {
-		// A demo certification is labelled, never solid: plaintext isotopes
+		// A demo certification is labeled, never solid: plaintext isotopes
 		// are stand-ins, not production evidence.
 		b.WriteString("   [demo]")
 	}
@@ -231,8 +235,8 @@ func renderSource(src Source) string {
 // probes through tuner.)
 func verifyHint(v View) []string {
 	served := false
-	for _, src := range v.Sources {
-		if contains(src.ToolsServed, ToolFeaturesVerify) {
+	for i := range v.Sources {
+		if contains(v.Sources[i].ToolsServed, ToolFeaturesVerify) {
 			served = true
 			break
 		}
